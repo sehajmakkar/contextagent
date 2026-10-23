@@ -5,7 +5,7 @@ DevRecall is a local-first context engine that helps developers and AI assistant
 
 **Your AI assistant should remember your work, not just your latest prompt.**
 
-## Core Features
+## Core Feature
 
 - **Desktop Context Capture:** Capture useful context across desktop workflows, with optional screen capture and user-controlled recording.
 - **Automatic Open-Loop Tracking:** Identify unfinished tasks, commitments, follow-ups, and completed work.
