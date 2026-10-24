@@ -29,12 +29,14 @@ Backup scenarios (Phase 7): "reply to the recruiter with my availability" (needs
 
 **Goal:** understand the target product, set up the tools, and pin down the demo.
 
-- [ ] Install and use Minimi for 2–3 days. Write `docs/minimi-teardown.md`: what it captures, how the inbox works, how a loop gets "closed", where you still had to act yourself. **This is your outreach hook.**
-- [ ] Skim Clicky (heyclicky.com) and Screenpipe the same way. One paragraph each.
-- [ ] Write `docs/demo-script.md`: the scenario above, step by step, with timings (target ≤ 3 min).
-- [ ] Accounts: a Gemini API key from Google AI Studio (free tier), and a Google Cloud project with the Gmail API on and an OAuth client (Desktop app type, test-user mode). Use a **separate test Gmail account** for the demo. Check your free-tier rate limits on the AI Studio rate-limit page and note them in `learnings.md`.
-- [ ] Repo skeleton: `brain/` (`uv init`, FastAPI, pytest), `app/` (empty Xcode menu-bar app), `.gitignore` (including `brain.db` and `.env`), `.env.example`.
-- [ ] `fixtures/`: about 15 synthetic "screen text" snapshots (Gmail threads, Slack messages, docs, terminal output). Include 6–8 real commitments, 3 tricky non-commitments, and 2 already-closed loops. Add `fixtures/inbox.json`, the fake mailbox for demo mode, holding the same threads.
+- [x] Install and use Minimi for 2–3 days. Write `docs/minimi-teardown.md`: what it captures, how the inbox works, how a loop gets "closed", where you still had to act yourself. **This is your outreach hook.**
+- [x] Skim Clicky (heyclicky.com) and Screenpipe the same way. One paragraph each.
+- [ ] `docs/minimi-teardown.md`: you've used Minimi, so get your notes into this file. Claude can turn rough notes into the doc.
+- [x] Write `docs/demo-script.md`: the scenario above, step by step, with timings (target ≤ 3 min).
+- [ ] **(You)** Accounts: a Gemini API key from Google AI Studio (free tier), and a Google Cloud project with the Gmail API on and an OAuth client (Desktop app type, test-user mode). Use a **separate test Gmail account** for the demo. Check your free-tier rate limits on the AI Studio rate-limit page and note them in `learnings.md`.
+- [ ] **(You)** Install Xcode from the App Store (only the Command Line Tools are installed). Needed for Phase 2.
+- [x] Repo skeleton: `brain/` (uv, Python 3.13), `.gitignore` (`.env`, `*.db`, OAuth files), `.env.example`. [~] The Xcode project moves to Phase 2 (needs Xcode). [~] FastAPI gets added in Phase 2, when the app first needs an HTTP endpoint.
+- [x] `fixtures/sessions/demo_week.jsonl`: 15 synthetic observations shaped like AX output, with 6 commitments, tricky non-commitments, 2 already-closed loops, and 1 revisit to test dedupe. The answer key is in `fixtures/README.md`. [~] `fixtures/inbox.json` moved to Phase 7 (ADR-024).
 
 **Concepts:** product teardown, open loops, local-first, how LLM APIs work (tokens, context window, why calls stop), free vs paid API tiers.
 **Decisions:** ADR-001, 002, 003, 004 ✅, 017, 019 ✅.
@@ -46,20 +48,22 @@ Backup scenarios (Phase 7): "reply to the recruiter with my availability" (needs
 
 **Goal:** prove the core idea from the command line. No capture, no UI, no Gmail yet.
 
-- [ ] `brain/src/brain/db/`: SQLite schema v0 with `observations`, `loops`, `loop_evidence`, `actions`.
-- [ ] Read Google's current interactions, text-generation, and structured-output docs. Decide which SDK surface to use (stateless calls only, ADR-019) and record the decision.
-- [ ] `brain/src/brain/llm/client.py`: a thin wrapper over `google-genai` with model, `thinking_level`, retries with backoff for 429s, token logging, and a response cache for tests.
-- [ ] `loops/detect.py`: given an observation, return `list[LoopCandidate]` through **structured outputs** (a Pydantic model with title, counterparty, what's owed, due date, evidence quote, confidence).
-- [ ] CLI `brain ingest fixtures/…`, which stores observations and detected loops.
-- [ ] CLI `brain loops`, which lists open loops.
-- [ ] CLI `brain close <id>`, a single LLM call that drafts the email reply from the loop plus its evidence, then prints it.
-- [ ] **Run it anywhere from day one:** `brain/Dockerfile` (built from `uv.lock`), `docker-compose.yml` (port `127.0.0.1:8765`, data folder bind-mounted), `Makefile`, and `docker compose run brain demo`, which runs ingest, loops, and close on the fixtures.
-- [ ] Record LLM responses for the fixtures so `pytest` runs with no API key.
-- [ ] Your first prompt-iteration log in `learnings.md`: what you changed, and what got better or worse.
+- [x] `brain/src/brain/db/`: [schema.sql](brain/src/brain/db/schema.sql) (v1: `observations`, `loops`, `loop_evidence`, `actions`) and [store.py](brain/src/brain/db/store.py) (WAL, `user_version` migrations, `0600` file).
+- [x] Read the installed SDK source and chose `models.generate_content` with `store=False` (ADR-021).
+- [x] [llm/client.py](brain/src/brain/llm/client.py): structured calls, `thinking_level`, SDK retries (backoff with jitter), token and latency logging, and errors turned into `LLMError`. [~] Response cache moved to Phase 3, where evals need it.
+- [x] [redact.py](brain/src/brain/redact.py): API keys, private keys, Luhn-checked card numbers, and OTPs, removed before storing.
+- [x] [loops/detect.py](brain/src/brain/loops/detect.py): `LoopCandidate` via structured output, confidence ≥ 0.6, grounding check, date grounding (ADR-025).
+- [x] [agent/draft.py](brain/src/brain/agent/draft.py): `EmailDraft` with `missing_info` placeholders. Recipients not in the thread are removed.
+- [x] CLI ([cli.py](brain/src/brain/cli.py)): `ingest`, `detect` (retry pending), `loops`, `show`, `close` (writes an audit-log row), `reset`, `where`.
+- [x] Offline tests: store, dedupe, redaction, grounding, recipient safety (11 passing). A live test (`pytest -m live`) checks the demo loop against real Gemini.
+- [x] **Ran the pipeline live on the fixtures.** Precision 5/5, recall 5/6, dedupe works, drafts are grounded with placeholders. Results are in the `learnings.md` log (2026-10-25).
+- [x] Fixed a bug found during verification: Rich markup injection when rendering untrusted text. Added a regression test. 13 tests passing.
+- [ ] **(You)** First prompt iteration: get the missed "launch blog post draft by Oct 28" detected (meeting action items) without adding false positives. Log what you changed, and what got better or worse, in `learnings.md`.
+- [~] Dockerfile, compose file, `docker compose run brain demo`, and recorded responses moved to Phase 7 (ADR-024, real first).
 
-**Concepts:** LLM request and response anatomy, system instructions, structured outputs and JSON Schema, Pydantic, prompt iteration, rate limits and backoff, Docker basics (images, volumes, port binding), record/replay testing.
-**Decisions:** ADR-010, 018 ✅, 019 ✅.
-**Done when:** `ingest → loops → close` works on the fixtures, both natively and through `docker compose run brain demo`, and you can explain every line of the LLM wrapper.
+**Concepts:** LLM request and response anatomy, system instructions, structured outputs and JSON Schema, Pydantic, grounding checks, confidence thresholds, prompt injection basics (delimiting untrusted text), rate limits and backoff, transactions and idempotent ingest, prompt iteration.
+**Decisions:** ADR-010, 019, 021, 022, 023, 024, 025.
+**Done when:** `brain ingest ../fixtures/sessions/demo_week.jsonl → brain loops → brain close <id>` works live, the loops match the answer key well, and you can explain every line of the LLM wrapper.
 
 ---
 
@@ -158,6 +162,7 @@ Backup scenarios (Phase 7): "reply to the recruiter with my availability" (needs
 - [ ] `docs/eval-report.md`: retrieval, loop, and agent metrics, plus cost per closed loop and latency. Report honest numbers and small sample sizes.
 - [ ] `docs/threat-model.md`: one page covering what data exists, where it goes, the attack surface (injection, token theft), and the mitigations.
 - [ ] Seed data and reset scripts so the demo is repeatable.
+- [ ] **Reviewer packaging (moved here from Phases 1 and 5, ADR-024):** `brain/Dockerfile` (built from `uv.lock`), `docker-compose.yml` (`127.0.0.1:8765`, data folder bind-mounted), `Makefile`, `DEMO_MODE` with `FakeMailbox` plus `fixtures/inbox.json`, `docker compose run brain demo`, and recorded LLM responses so CI needs no key.
 - [ ] **Reviewer quickstart, tested on a clean macOS user account:** clone, add the key to `.env`, run `docker compose up`, then `make app` (or the prebuilt `.app` from GitHub Releases). Aim for under 5 minutes, and fix every snag you hit.
 - [ ] GitHub Actions: build the Docker image and run the tests on recorded responses, with a badge in the README.
 - [ ] Evaluate SQLCipher encryption at rest (check sqlite-vec compatibility). Ship it or write down why not (ADR-014).

@@ -53,7 +53,7 @@ Swift menu-bar app (app/, native)              Python "brain" (brain/, Docker or
 
 - The **brain owns the database.** The Swift app talks to it over HTTP only. It never opens the SQLite file. (ADR-004)
 - **Docker can't run the app.** Docker on macOS is a Linux VM with no access to macOS APIs. Docker runs the brain, and the app always runs natively. (ADR-018)
-- Planned layout: `app/` (Xcode project), `brain/` (uv project: `src/brain/{api,db,llm,memory,loops,agent,mailbox}`, `evals/`, `tests/`, `Dockerfile`), `fixtures/` (synthetic screen sessions plus a fake inbox), `docs/`, `docker-compose.yml`, `Makefile`.
+- Layout: `brain/` (uv project). It has `src/brain/` with `cli.py`, `config.py` (reads the repo-root `.env`), `models.py` (`ObservationIn`, the contract with the Swift app), `redact.py`, `db/` (`schema.sql`, `store.py`), `llm/client.py`, `loops/detect.py`, and `agent/draft.py`, plus `tests/`. Then `fixtures/sessions/` (synthetic observations, with the answer key in `fixtures/README.md`) and `docs/`. Coming later: `app/` (Xcode, Phase 2), `memory/` (Phase 3), `mailbox/` (Phase 5), `api.py` (Phase 2), `evals/`.
 
 ## Tech stack (details and reasons in `decisions.md`)
 
@@ -73,9 +73,9 @@ Swift menu-bar app (app/, native)              Python "brain" (brain/, Docker or
 
 - **Only stable model IDs:** `gemini-3.8-flash` (default) and `gemini-3.5-flash-lite` (pre-filter candidate, decided in Phase 4). Never `-preview` IDs, because they get shut down and would break the demo. Pro models are paid-only, so don't use them.
 - All model calls go through `brain/src/brain/llm/client.py`. No other module imports `google.genai`.
-- **Stateless calls only.** Don't use server-side conversation state (`previous_interaction_id` or stored interactions). Keep history locally, and pass thought blocks or signatures back **exactly** as received.
+- **Use `client.models.generate_content` with `store=False`** (ADR-021), not the Interactions API. It's stateless: keep history locally, and pass thought blocks or signatures back **exactly** as received. Retries come from the SDK's `HttpRetryOptions`, configured in `llm/client.py`.
 - Thinking is controlled with `thinking_level` (low/medium/high on 3.8 Flash, default medium). Set it explicitly per call site.
-- Structured output: pass a Pydantic model's JSON Schema as the response format, then **always** `model_validate_json` the result.
+- Structured output: `response_mime_type="application/json"` plus `response_json_schema=Model.model_json_schema()`, then **always** `Model.model_validate_json(response.text)`. Check `finish_reason == STOP` first.
 - Function calling: our own loop, with the SDK's automatic function execution turned off. We run every tool ourselves (ADR-011).
 - Embeddings: `gemini-embedding-2`, `output_dimensionality=768`, **one text per call** (a list gives back one combined vector). No `task_type`. Use the prefixes `task: search result | query: …` and `title: … | text: …`. Cache by content hash.
 - Free-tier rate limits are low. Retry 429s with exponential backoff and jitter, and cache responses in evals and tests.
@@ -93,25 +93,27 @@ Swift menu-bar app (app/, native)              Python "brain" (brain/, Docker or
 
 ## Commands
 
-_Fill in as they come to exist._
+Real paths first. Docker and demo mode come in Phase 7 (ADR-024).
 
 ```bash
-# reviewer path
-cp .env.example .env               # add GEMINI_API_KEY
-docker compose up                  # brain on 127.0.0.1:8765 (DEMO_MODE=1 by default)
-make app                           # build and launch the native menu-bar app
-docker compose run brain demo      # headless end-to-end demo in the terminal
-
-# dev path
+cp .env.example .env                                  # add GEMINI_API_KEY (repo root)
 cd brain && uv sync
-uv run fastapi dev src/brain/api.py
-uv run pytest                      # uses recorded LLM responses, no key needed
-uv run python -m evals.run_retrieval
+
+uv run brain ingest ../fixtures/sessions/demo_week.jsonl   # store + detect loops (-v logs each LLM call)
+uv run brain loops [--all]                            # list loops
+uv run brain show <id>                                # loop + evidence
+uv run brain close <id>                               # draft the reply (never sends), audit-logged
+uv run brain detect                                   # retry detection on unprocessed observations
+uv run brain where | reset                            # data location / delete the DB
+
+uv run pytest                                         # offline tests
+uv run pytest -m live                                 # real Gemini call (needs key)
+DATA_DIR=/tmp/ctx uv run brain …                      # use a throwaway DB
 ```
 
 ## Where things are tracked
 
-- `plan.md`: phases, tasks, current status. **Current phase: Phase 0.**
+- `plan.md`: phases, tasks, current status. **Current phase: Phase 1 verified live (2026-10-25). Waiting for the user's approval before Phase 2.**
 - `decisions.md`: ADRs, meaning every decision with its options and tradeoffs.
 - `learnings.md`: concept notes and interview prep, appended after each task.
 - `readme.md`: public pitch plus the reviewer quickstart (rewrite in Phase 7).

@@ -1,0 +1,19 @@
+# secrets and local data (CLAUDE.md safety rules)
+.env
+*.db
+*.db-wal
+*.db-shm
+credentials*.json
+token*.json
+
+# python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+
+# macOS / Xcode
+.DS_Store
+build/
+DerivedData/
+xcuserdata/

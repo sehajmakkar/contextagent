@@ -150,9 +150,111 @@ Later, a search:  query ─TLS─► Gemini (embed query) ─► vector ─► n
 
 ---
 
+## Phase 1: what we built and why it works
+
+### Anatomy of one LLM call  (Phase 1 · ADR-021 · [client.py](brain/src/brain/llm/client.py))
+**What:** every call to the model is one HTTP request: *instructions + input + output contract*, sent to `models.generate_content`.
+**How it works, piece by piece:**
+- `system_instruction`: the standing rules (role, definitions, what to ignore). It's the same for every observation.
+- `contents`: this request's specific input (the capture time, the app, the screen text).
+- `response_mime_type` + `response_json_schema` ([client.py:64](brain/src/brain/llm/client.py#L64)): the output contract (see *Structured outputs*).
+- `thinking_config.thinking_level`: how much the model reasons privately before answering. Thinking tokens are billed and use up rate limit, so we use `low` for extraction and `medium` for writing emails.
+- `store=False` ([client.py:67](brain/src/brain/llm/client.py#L67)): asks Google not to log this request.
+- The response's `finish_reason` ([client.py:75](brain/src/brain/llm/client.py#L75)) must be `STOP`. `MAX_TOKENS` means the JSON was cut off, and `SAFETY` means it was blocked. Check it *before* parsing.
+- `usage_metadata` gives prompt, output, and **thinking** tokens. The CLI prints totals after each command, so you can watch the cost.
+**Interview Q:** "What's the difference between the system prompt and the user prompt?" → The system prompt is the stable policy, the same for every call, which also makes it cacheable. The user prompt is the per-request data. Keeping untrusted data out of the system prompt is a security boundary.
+
+### Prompt patterns in the detection prompt  (Phase 1 · ADR-025 · [detect.py:38](brain/src/brain/loops/detect.py#L38))
+- **Definitions with counterexamples.** We spell out what is *not* a loop (pleasantries, marketing, code TODOs, other people's tasks). Models over-detect without negative examples.
+- **A base-rate hint.** "Most screens contain no open loops." Without it, the model tends to find *something* on every screen.
+- **Date grounding.** We pass the capture time *with the weekday* (`strftime("%A …")`, [detect.py:74](brain/src/brain/loops/detect.py#L74)), so "by Wednesday" becomes `2026-10-21`. The model can't know "today" otherwise.
+- **Delimiting untrusted data.** Screen text goes inside `<screen_text>…</screen_text>`, and the rules say it's data, not instructions. This is the first, weakest layer of prompt-injection defence. The real defence is in permissions (ADR-012).
+- **Schema field descriptions act as instructions too.** `Field(description=…)` on `LoopCandidate` reaches the model inside the JSON Schema.
+**Interview Q:** "How do you stop an extractor from hallucinating?" → Clear negative examples and a base-rate hint, then verify the output in code (the next entry).
+
+### Grounding checks and confidence thresholds  (Phase 1 · ADR-025 · [detect.py:89](brain/src/brain/loops/detect.py#L89))
+**What:** treat LLM output as a *claim* to verify, not as fact.
+**How it works:** (1) the `evidence_quote` must actually appear in the source text, after normalizing whitespace and case. If it doesn't, the model paraphrased or made it up, so we drop the loop. (2) Below `MIN_CONFIDENCE = 0.6`, we drop it. (3) After drafting, any recipient address not in the thread is removed ([draft.py:70](brain/src/brain/agent/draft.py#L70)).
+**Gotchas:** a model's self-reported confidence isn't *calibrated* (0.8 doesn't mean right 80% of the time). The threshold is a guess until the Phase 4 eval measures precision and recall at different cut-offs.
+**Interview Q:** "Why ask for a verbatim quote?" → It makes the claim checkable with one string search, and it gives the UI proof to show the user.
+
+### Idempotent ingest, content hashes, and transactions  (Phase 1 · ADR-022 · [store.py](brain/src/brain/db/store.py))
+**What:** *idempotent* means running something twice gives the same result as running it once.
+**How it works:** each observation gets `sha256(bundle_id, window_title, text)` ([store.py:47](brain/src/brain/db/store.py#L47)), with a `UNIQUE` constraint and `INSERT OR IGNORE`. Re-ingesting the file stores nothing new (the test proves it). Detection runs in a **separate pass** over `processed_at IS NULL`. If Gemini fails midway (a 429 or a timeout), `brain detect` picks up exactly where it stopped. Each observation's loops and its `processed` flag are written in **one transaction** ([cli.py:97](brain/src/brain/cli.py#L97)), so a crash can't leave half-written state.
+**Gotchas:** our first version detected inside the insert loop, so a failed observation was stored but never retried, because re-ingesting skipped it as a duplicate. Splitting "store" from "process" fixed it.
+**Interview Q:** "Your capture app retries a POST. How do you avoid duplicates?" → A content hash plus a unique constraint makes ingest idempotent. Processing state lives in the row, not in memory.
+
+### Retries, exponential backoff, and jitter  (Phase 1 · [client.py:43](brain/src/brain/llm/client.py#L43))
+**What:** when an API says "too many requests" (429) or has a server error (5xx), wait and try again, longer each time.
+**How it works:** delay ≈ `initial_delay × 2^attempt` (2s, 4s, 8s…, capped at 60s), plus random **jitter**, so many clients don't all retry at the same instant (the "thundering herd"). The SDK's `HttpRetryOptions` does this for 408/429/5xx. We set 5 attempts. If they're all used up, we raise `LLMError`.
+**Gotchas:** retrying doesn't help when the *daily* free quota is gone, only when the per-minute limit was hit. Never retry 400s, since the request itself is wrong.
+**Interview Q:** "Why jitter?" → Without it, clients that failed together retry together and overload the server again.
+
+### SQLite details that matter  (Phase 1 · ADR-022)
+- **WAL mode** (`PRAGMA journal_mode=WAL`): readers don't block the writer. That matters once the Swift app reads loops while the brain writes.
+- **`PRAGMA user_version`**: a free integer in the DB header that we use as the schema version, so migrations run once.
+- **`foreign_keys=ON`**: SQLite turns it off by default. Without it, `ON DELETE CASCADE` does nothing.
+- **Permissions**: DB file `0600`, folder `0700`, so other user accounts on the Mac can't read it.
+
+### Redaction and the Luhn check  (Phase 1 · [redact.py](brain/src/brain/redact.py))
+**What:** regex patterns for well-known secret shapes (Google/OpenAI/AWS/GitHub/Slack keys, PEM private keys, OTP codes), applied before storing.
+**How it works:** a 13–19 digit run is only redacted as a card if it passes the **Luhn checksum** ([redact.py:24](brain/src/brain/redact.py#L24)), the check digit every real card number has. This keeps order numbers and IDs from being wiped out.
+**Gotchas:** regexes catch known shapes only. It's a safety net, not a guarantee, so it's layered with the app denylist (Phase 2) and the free-tier rule.
+
+---
+
+### Output encoding: model output is untrusted when you *display* it too  (Phase 1 · [cli.py](brain/src/brain/cli.py))
+**What:** text from the screen or the model can contain characters that the *display layer* treats as code. On the web that's XSS (HTML). In our terminal, it's Rich's `[style]` markup.
+**What happened:** the draft said `[[available times next week]]`, and Rich parsed `[available times next week]` as a style tag and swallowed it, so the user saw `[]`. `[[Q3 retention numbers]]` survived only because it starts with a capital letter. Our own `[created]` label vanished the same way.
+**Fix:** escape every untrusted string at the point of display (`_e()` → `rich.markup.escape`), with a regression test in `tests/test_cli.py`. The SwiftUI app in Phase 6 must treat model text as plain text, never as Markdown or attributed strings.
+**Interview Q:** "Where do you sanitise LLM output?" → At every boundary where it's interpreted: as SQL (parameterised queries), as HTML or markup (escaping), as shell (never), and as tool arguments (schema validation plus an allowlist).
+
+### Scaling actions to many apps: connectors, tools, and risk-based approval  (Phase 5 preview · ADR-026)
+**The question:** today `agent/draft.py` drafts one Gmail reply. How does a company like Minimi close loops across WhatsApp, docs, PDFs, research, and email?
+**The pattern most agent products converge on:**
+1. **Separate the brain from the hands.** One *planner* agent decides how to close the loop. Many *tools* do the work. The agent never contains Gmail-specific logic. It sees tool descriptions and schemas, then picks tools.
+2. **A connector exposes typed tools**, each declaring `name`, `description`, a JSON Schema, and a **risk class**:
+   - `read`: search memory, fetch a thread, read a doc (no side effects)
+   - `draft`: create a draft, create a doc in a drafts folder (reversible, private)
+   - `execute`: send, post, share, pay (outward, irreversible)
+3. **Approval policy keys on risk class, not on the app.** `read` runs freely, `draft` runs and shows its result, and `execute` *always* needs a human click. Adding WhatsApp doesn't mean new safety code, only a new connector whose `send` is tagged `execute`.
+4. **Plan → approve → execute → verify.** The agent proposes a structured plan ("reply in the WhatsApp chat where the ask came from, attaching the PDF I'll generate"). The user approves. Tools run. Then a verify tool reads the result back (is the message in Sent, does the file exist) before the loop closes.
+5. **The reply channel follows the source.** The loop's evidence says where the ask came from (Gmail thread, Slack DM, WhatsApp chat), and that's usually where the reply goes.
+**How companies get the "hands" (from best to most fragile):**
+- **Official APIs** (Gmail, Slack, Notion, Google Docs): reliable and scoped, but each one needs OAuth, token refresh, and maintenance. Many companies buy this layer from integration platforms (Composio, Nango, Pipedream Connect, Merge, Paragon) instead of building 50 OAuth flows themselves.
+- **MCP servers:** the emerging standard. The agent is an MCP *client*, and each app is an MCP *server* exposing tools. Many vendors now ship their own. One protocol means N integrations without N custom adapters.
+- **OS-level automation on the Mac:** App Intents, Shortcuts, AppleScript, and URL schemes. For example, a WhatsApp deep link can open the chat with the text pre-filled, and the user presses Send. Human-in-the-loop comes for free.
+- **UI automation through Accessibility:** the same AX API we *read* with can also *press buttons and type*. It covers apps with no API (personal WhatsApp has no official API), but it breaks when the UI changes.
+- **Computer use (vision models clicking pixels):** the most general and the most fragile. We ruled out screenshots (ADR-005).
+**"Producer" tools** (make a PDF, write a doc, do research) are just tools that create an *artifact* (a local file or a doc in drafts). Sending that artifact is a separate `execute` step that goes through approval.
+**At scale:** with hundreds of tools, models choose worse, so the agent retrieves only the relevant tools per loop ("tool search"). Every tool gets its own eval, and every `execute` gets an idempotency key so a retry never sends twice.
+**Interview Q:** "How would you take this from Gmail to 20 integrations?" → A connector interface with risk-classed tools, a generic approval gate keyed on risk, MCP or an integration platform for auth, and plan → approve → execute → verify, so adding an app is configuration, not new safety logic.
+
+---
+
 ## Log: what we actually learned
 
 _Newest first. Add entries as tasks finish._
+
+### 2026-10-25: First live run of Phase 1 (verification)
+- **Detection vs the answer key** (`fixtures/README.md`): 6 expected loops, **5 found, 0 false positives, 1 miss.** Precision 5/5 = 1.00, recall 5/6 = 0.83.
+  - ✅ Priya (due 2026-10-21: it used *your* "by Wednesday", not her "before Thursday"), Rahul PR, Maya, Ananya (*they owe*, due Friday 10-23), lease (10-31).
+  - ✅ Ignored the promo email, the coffee pleasantry, the code TODO, the already-sent NDA, and Dev's and Priya's action items.
+  - ✅ Dedupe: the second visit to the Priya thread attached to loop #1 ("Seen 2×") instead of creating a duplicate.
+  - ❌ **Missed:** "Sehaj: write the launch blog post draft by Oct 28" in the meeting notes. Likely cause: our rule "tasks that involve no other person are not loops" makes a meeting action item look like a to-do for yourself. **This is your first prompt-iteration exercise.**
+  - ⏳ Expected for Phase 1: the PR loop stays open even though Rahul later said "merged". Closure detection is Phase 4.
+- **Cost and latency:** 15 calls, 7,376 prompt tokens, 726 output, **1,915 thinking**, 54.8s total (about 3.7s per call). Thinking at `low` still varies: the meeting-notes call used 1,183 thinking tokens and took 13s, *and* missed the loop. Hard inputs cost more.
+- **Rate-limit maths for Phase 2:** at one observation every 30s, per-observation detection is about 120 calls an hour, which would use up a daily free quota within a working day. That's why Phase 2 needs dedupe and throttling, and Phase 4 needs a cheap pre-filter.
+- `store=False` is accepted on the free tier (ADR-021 risk resolved).
+- Re-ingesting is idempotent: 0 new, 15 duplicates, 0 LLM calls.
+- **Bug found and fixed:** Rich markup injection in the CLI (see *Output encoding*).
+- Added `thinking_tokens` to the audit log, because thinking was the largest token cost on some calls.
+
+### 2026-10-24: Building the Phase 1 walking skeleton
+- We read the installed SDK source (`google-genai` 2.33.0) instead of relying on blog posts. That's how we found that `generate_content` isn't deprecated, has a `store` flag, and has built-in retry options. Third-party pages disagreed about model names and APIs. The source was the ground truth.
+- Bug caught in design review: detecting during insert made failed observations impossible to retry. The fix was to split store from process (see *Idempotent ingest*).
+- The fixtures double as a labelled eval set (answer key in `fixtures/README.md`). Writing tricky negatives (promo email, coffee pleasantry, code TODO, other people's action items) is half of prompt design.
+- Still to do with your key: run live, compare against the answer key, and log the first prompt iteration here.
 
 ### 2026-10-24: Switching from Claude to Gemini, and the reviewer-ready design (Phase 0)
 - We switched the LLM and embeddings to Gemini for the free tier (ADR-019 and 020 replace ADR-006 and 008). The decision history stays in `decisions.md`.

@@ -1,0 +1,31 @@
+[project]
+name = "brain"
+version = "0.1.0"
+description = "Local-first memory, open-loop detection, and action agent for macOS Context Agent"
+authors = [
+    { name = "Sehaj Preet", email = "codewithsehaj@gmail.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "google-genai>=2.33.0",
+    "pydantic>=2.14.1",
+    "pydantic-settings>=2.16.1",
+    "rich>=15.0.0",
+    "typer>=0.27.3",
+]
+
+[project.scripts]
+brain = "brain.cli:app"
+
+[build-system]
+requires = ["uv_build>=0.11.21,<0.12.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["live: calls the real Gemini API (needs GEMINI_API_KEY)"]
