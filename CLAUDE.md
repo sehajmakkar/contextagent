@@ -25,6 +25,7 @@ The user is learning while building. Every task follows this loop:
 4. **After the task, update `learnings.md`.** Add or extend an entry for each new concept: what it is, how it works, where it lives in our code, gotchas we hit, and 1–2 interview questions with short answers.
 5. **Let the user write the core pieces.** For key AI pieces (agent loop, retrieval fusion, eval metrics, loop-detection prompt), offer to let the user write a first version and then review it. Don't force this; offer it.
 6. **Keep `plan.md` current.** Tick tasks off and note anything that slipped or was cut.
+7. **Log hard problems in `challenges.md`.** When something takes real debugging or design iteration (a failed approach, a surprising platform limit, a scaling concern), add an entry: situation → why it was hard → what we tried → what worked → result with numbers → tradeoff → a one-line pitch the user can use in interviews and cold DMs. Mark proposals 🔵 until they're built.
 
 Match the depth of explanation to the concept. Spend more on ideas that will come up in interviews (agents, retrieval, evals, prompt injection, privacy and storage) and less on boilerplate.
 
@@ -121,4 +122,5 @@ DATA_DIR=/tmp/ctx uv run brain …                      # use a throwaway DB
 - `plan.md`: phases, tasks, current status. **Current phase: Phase 2 verified on real apps (2026-10-25). Waiting for the user's approval before Phase 3.**
 - `decisions.md`: ADRs, meaning every decision with its options and tradeoffs.
 - `learnings.md`: concept notes and interview prep, appended after each task.
+- `challenges.md`: hard problems, what we tried, what worked, with numbers and a pitch line. Material for interviews and cold DMs.
 - `readme.md`: public pitch plus the reviewer quickstart (rewrite in Phase 7).
