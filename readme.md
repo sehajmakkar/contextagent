@@ -1,65 +1,30 @@
-# McCuck
-### A privacy-first memory layer for macOS and AI agents
+# macOS Context Agent
 
-DevRecall is a local-first context engine that helps developers and AI assistants remember what matters across desktop apps and work sessions. It captures useful context, tracks open loops, and makes relevant memories accessible through MCP.
+### Remember your work. Help you get it done.
 
-**Your AI assistant should remember your work, not just your latest prompt.**
+A privacy-first AI assistant for macOS that understands your desktop context, remembers important information, tracks unfinished tasks, and helps complete them through connected tools. Unlike traditional memory tools, it aims to move beyond identifying what needs to be done and help users actually do it.
 
-## Core Feature
+## Features
 
-- **Desktop Context Capture:** Capture useful context across desktop workflows, with optional screen capture and user-controlled recording.
-- **Automatic Open-Loop Tracking:** Identify unfinished tasks, commitments, follow-ups, and completed work.
-- **Persistent Memory:** Remember project context, decisions, preferences, previous work, and recurring patterns across sessions.
-- **MCP Integration:** Let compatible AI assistants, including Claude and GPT-based clients, retrieve relevant context through tools.
-- **Smart Retrieval:** Search memories using keywords, semantic similarity, recency, and project context.
-- **Session Resumption:** Generate concise summaries of previous work, unresolved issues, and suggested next actions.
-- **Privacy-First by Design:** Store personal context locally on macOS by default, with transparent permissions, app exclusions, redaction, and user-controlled deletion.
+- **Context Capture:** Extract useful context from user-approved screen capture.
+- **Automatic Open-Loop Tracking:** Identify tasks, commitments, follow-ups, and completed work.
+- **Persistent Memory:** Remember relevant context across applications and work sessions.
+- **AI Action Agent:** Resolve selected tasks through connected services, starting with email workflows etc.
+- **MCP Integration (v2):** Let compatible AI assistants access relevant memories and context.
+- **Privacy First:** Store data locally on the Mac by default, with user-controlled permissions and deletion.
 
-## How It Works
+### Inspired by Minimi (projectminimi.com)
+- adding the ai action agent feature i.e. ai agent can close the open loops for you.
 
-1. **Capture:** Collect user-approved context from desktop activity and explicit inputs.
-2. **Process:** Extract useful information, identify tasks and decisions, and detect open or closed loops.
-3. **Store:** Organize memories locally with timestamps, sources, projects, and searchable metadata.
-4. **Retrieve:** Rank relevant memories for a question or task.
-5. **Connect:** Expose memory and context tools to AI assistants through MCP.
+## Goal
 
-## Initial Tech Stack
+Build a local-first memory and action layer that helps AI assistants understand your work and safely take action on your behalf.
 
-- **macOS App:** Swift / SwiftUI
-- **Local Storage:** SQLite + FTS5
-- **Memory & MCP Server:** TypeScript
-- **Retrieval:** Full-text search first; embeddings and hybrid retrieval later
-- **Context Processing:** Background jobs, structured extraction, and optional AI models
+## Status
 
-## Evaluation Metrics
+In development.  
+  
+## Target Companies
 
-- **Retrieval Quality:** Recall@5, Precision@5, and overall retrieval precision/recall.
-- **Latency:** p50 and p95 retrieval latency.
-- **Context Efficiency:** Tokens supplied versus full-history context; estimated tokens saved.
-- **Memory Accuracy:** Correctness of extracted facts, task states, and open/closed-loop detection.
-- **Task Resumption:** Whether an assistant can correctly identify prior work and the next action.
-- **Answer Quality:** Accuracy and relevance of responses with retrieved context.
-- **Resource Usage:** CPU, memory, battery impact, and local storage growth.
-- **Privacy & Safety:** Redaction effectiveness, permission enforcement, app exclusions, and deletion correctness.
-
-## Potential Target Companies
-
-Companies to study, learn from, or approach for relevant engineering opportunities. This list does **not** imply they are currently hiring or that every role is suitable.
-
-**Desktop memory & personal AI:** Minimi, HeyClicky, Screenpipe, Sentient OS, Pickle, Nessie, IrisGo, jo, Egoist Machines, Crater, Town, Granola, Memory Store, Epicenter, Almanac, Supermemory, Mem0.
-
-**AI agents, infrastructure & reliability:** Ressl AI, Agnost AI, Maxim AI, Cekura, BentoLabs, DrDroid, CodeAnt AI, TestMu AI, Raga AI, Composio, TrueFoundry, Portkey, Metorial, Dexto, Scalekit, UnifyApps, Lyzr.
-
-**AI media & workflow products:** Cardboard, Clueso, Trupeer, InVideo, Spyne.ai.
-
-## Guiding Principles
-
-- Local-first storage and privacy by default.
-- Capture useful context, not everything indiscriminately.
-- Retrieve relevant memories instead of dumping entire histories.
-- Give users control over what is captured and remembered.
-- Measure retrieval quality and task usefulness, not just feature count.
-
-## Project Status
-
-Early-stage project. Initial focus: a working macOS context store, open-loop tracking, MCP tools, and a reproducible evaluation suite.
+projectminimi.com, heyclicky.com
+others: Screenpipe, Sentient OS, Pickle, Nessie, IrisGo, jo, Egoist Machines, Crater, Town, Granola, Memory Store, Epicenter, Almanac, Supermemory, Mem0.
