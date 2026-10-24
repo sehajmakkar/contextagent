@@ -232,9 +232,82 @@ Later, a search:  query ─TLS─► Gemini (embed query) ─► vector ─► n
 
 ---
 
+## Phase 2: Swift, macOS Accessibility, and the local API
+
+### TCC, code signing, and why the permission kept "forgetting"  (Phase 2 · ADR-028 · [Makefile](Makefile))
+**What:** TCC (Transparency, Consent and Control) is macOS's permission database: Accessibility, Screen Recording, Camera, and so on. A grant is stored against the app's **code-signing identity**, not its file path.
+**How it works:** every signed app has a **designated requirement**, a rule that says "this is the same app". Run `codesign -d -r- build/ContextAgent.app` to see ours: `identifier "com.sehajpreet.contextagent" and anchor apple generic and certificate leaf[subject.CN] = "Apple Development: …"`. Any rebuild signed with that certificate still matches, so the grant survives. **Ad-hoc** signing (`codesign -s -`) produces a requirement based on a hash of the binary. Every rebuild then looks like a different app, and the toggle in System Settings silently stops working.
+**What happened to us:** Xcode created your Apple Development certificate, but `security find-identity -v` reported "0 valid". The certificate is issued by **Apple WWDR G3**, and your keychain only had the old WWDR intermediate (expired 2023), so the chain to Apple Root CA couldn't be built (`errSecInternalComponent`). Installing Apple's public G3 intermediate fixed it. The grant then survived 4+ rebuilds.
+**Also:** a process inherits its *responsible* app's TCC rights. A script run from the terminal is judged by the terminal's permissions, which is why our scratch test crashed while `make dump`, launched via `open` as the app itself, worked.
+**Interview Q:** "Users say they enabled the permission but your app still can't read the screen. Why?" → The signature changed between builds (ad-hoc signing, or a different certificate), so TCC treats it as a new app. Sign with a stable identity, or `tccutil reset Accessibility <bundle-id>` and grant it again.
+
+### The accessibility tree  (Phase 2 · ADR-031 · [AXElement.swift](app/Sources/ContextAgent/Accessibility/AXElement.swift), [WindowTextReader.swift](app/Sources/ContextAgent/Accessibility/WindowTextReader.swift))
+**What:** every app publishes its UI as a tree of **elements** (`AXUIElement`) for screen readers like VoiceOver. Each element has **attributes**: `AXRole` (what it is: `AXStaticText`, `AXButton`, `AXWebArea`…), `AXSubrole` (a refinement: `AXSecureTextField`, `AXLandmarkMain`…), `AXValue` (its content), `AXTitle`/`AXDescription` (labels), and `AXChildren`.
+**How we read it:** app element (from the PID) → `AXFocusedWindow` → find `AXWebArea` in browsers → depth-first walk collecting `AXValue` from text roles and labels from headings, links and buttons.
+**Performance:** every attribute read is an **IPC round trip** to the other app. So we fetch role, subrole and children in one call (`AXUIElementCopyMultipleAttributeValues`), cap the walk (5,000 nodes, depth 60, 20,000 chars), set a 0.5s messaging timeout so a hung app can't freeze us, and run off the main thread. Measured: Gmail thread 326 nodes in 55 ms, Notes 634 nodes in 594 ms (native AppKit is slower per node).
+**Debugging:** `make dump BUNDLE=…` prints the text plus a **role histogram**. That's how we found Gmail's landmarks. Apple's *Accessibility Inspector* (Xcode → Open Developer Tool) shows the same tree visually.
+**Interview Q:** "Why accessibility instead of screenshots and OCR?" → It's already structured text (no OCR errors), it's cheap (tens of milliseconds, no GPU), it carries semantics (roles, landmarks, password flags), and no pixels of anything sensitive are ever captured.
+
+### Chromium and Electron hide their tree: `AXManualAccessibility`  (Phase 2 · ADR-031)
+**What:** building an accessibility tree for a web page is expensive, so Chrome and Electron apps (Slack, VS Code, Cursor) only build it when an assistive app asks. Otherwise you get an almost empty window.
+**How:** set `AXManualAccessibility = true` on the app element. Native apps ignore it, so we set it on every app. The first read after enabling can be thin while the tree builds, and the next 5s poll gets the full text.
+**Interview Q:** "Your reader works on Notes but returns nothing for Slack. Why?" → Slack is Electron, and Chromium builds its AX tree lazily. Ask for it with `AXManualAccessibility`.
+
+### ARIA landmarks: using the web's own structure to cut noise  (Phase 2 · ADR-031)
+**What:** web pages mark their regions with ARIA roles (`banner`, `navigation`, `search`, `main`, `complementary`, `contentinfo`) so screen-reader users can jump straight to the content. Chrome exposes them as subroles (`AXLandmarkNavigation`…).
+**In our project:** we skip Banner, Navigation, Search, Complementary and ContentInfo, and keep Main. On a real Gmail thread: 2,584 → 1,857 chars (−28%), 125 → 80 lines. It's one generic rule rather than Gmail-specific scraping, so it works on any well-built site.
+**Gotcha:** not everything is tagged. Gmail's message toolbar isn't an `AXToolbar`, so about 10 button labels remain.
+
+### Privacy by architecture in the reader  (Phase 2 · ADR-005, 014, 031)
+- **Exclude before reading.** Password managers, Keychain and System Settings are checked by bundle ID *before* any AX call. "Never stored" isn't enough; they're never read at all.
+- **Password fields:** on `AXSecureTextField` we skip the subtree and never request `AXValue`.
+- **URLs:** the query string is dropped (reset tokens and OAuth codes live there). The fragment is kept (`#inbox/FMfcg…` identifies the Gmail thread for Phase 5).
+- **Free tier:** live captures are stored locally and held back from Gemini (ADR-027).
+**Interview Q:** "How do you make sure you never capture a password?" → Layers: an app denylist checked before reading, skipping the secure-field role, regex redaction in the brain, and a policy that real screen text never goes to a provider that may train on it.
+
+### Debouncing: send only what's stable  (Phase 2 · ADR-030 · [CapturePolicy.swift](app/Sources/ContextAgent/Capture/CapturePolicy.swift))
+**What:** *debouncing* means waiting until something stops changing before acting on it (as with a search box that waits for you to stop typing).
+**How:** a snapshot is sent only if its fingerprint (text with digits masked) matches the previous read 5s earlier. If you're mid-sentence, it keeps "settling".
+**Real data:** while you wrote the EVE reply, the app sent 3 snapshots, each after the draft had paused, rather than one every poll.
+**Bug the tests caught:** after a failed send, the retry had to settle again (an extra 5s delay). It now goes straight back to pending.
+
+### Near-duplicate detection: three designs  (Phase 2 · ADR-030 · [ingest.py](brain/src/brain/ingest.py))
+1. **Jaccard similarity ≥ 0.9** (shared word-triples ÷ all word-triples). One unread-badge change on a 36-word screen scored 0.89, so it was stored. A new *"can you review my PR?"* in a long Slack channel scored **0.944**, so it was **dropped**. Relative measures get both short and long screens wrong.
+2. **Count of new word-triples ≤ 6.** Fixes Slack, but "yep, will do" adds 3 triples, exactly like a clock tick.
+3. **New lines after masking digits.** ✅ AX text is one element per line, so a new message is always a new line, and a badge or clock change never is, once digits are masked.
+**Lesson:** choose the metric for what you actually care about (new information), not generic similarity. Keep the failed designs as regression tests.
+
+### Securing a localhost service  (Phase 2 · ADR-029 · [api.py](brain/src/brain/api.py))
+**The threat:** any web page you visit can make your browser send requests to `http://127.0.0.1:8765`. With **DNS rebinding** (the attacker's domain first resolves to their server, then to 127.0.0.1), it can even read the responses, because the browser thinks it's still the same site.
+**Our defences:** bind to 127.0.0.1 only (nothing on your Wi-Fi can connect). Require an `X-Brain-Token` read from a `0600` file, which a web page can't read, compared in constant time. Allowlist `Host` headers, since a rebinding request still says `Host: evil.example`. Tested: 401 without the token, 400 for a foreign Host.
+**Interview Q:** "It only listens on localhost, so it's safe, right?" → No. The browser is a bridge into localhost. Use a capability token plus Host validation.
+
+### Swift 6 concurrency in practice  (Phase 2 · [AppModel.swift](app/Sources/ContextAgent/Capture/AppModel.swift))
+- **`@MainActor` app state:** the UI and `AppModel` live on the main thread. `@Observable` makes SwiftUI re-render when its properties change.
+- **Blocking work goes off the main thread:** AX reads are synchronous IPC, so they run in `Task.detached`. Only `Sendable` values cross over (PIDs, strings, the `WindowSnapshot` struct). The non-Sendable `AXUIElement`s are created and used inside the task.
+- **Global C constants:** `kAXTrustedCheckOptionPrompt` is a mutable global, which Swift 6 flags as not concurrency-safe. We use its string value instead.
+- **Notifications:** an `NSWorkspace` app-switch observer on the `.main` queue calls `MainActor.assumeIsolated`.
+- It compiled with **zero** Swift 6 strict-concurrency warnings on the first build.
+
+### Timestamps need the local offset  (Phase 2 · [BrainClient.swift](app/Sources/ContextAgent/Brain/BrainClient.swift))
+The detector resolves "by Wednesday" against the capture time. A bare UTC timestamp at 1 a.m. IST is still the previous day in UTC, so the weekday would be wrong. The app sends `2026-10-25T01:19:13+05:30` (local time plus offset).
+
+### Migrations and threads in SQLite  (Phase 2 · [store.py](brain/src/brain/db/store.py))
+- **Numbered migration files** (`001_initial.sql`, `002_capture.sql`). Each runs once, with its `user_version` bump, inside one transaction, so a crash can't leave the schema half-migrated. `ALTER TABLE … ADD COLUMN … DEFAULT` upgraded existing rows (there's a test for v1 → v2).
+- **One connection per thread:** a `sqlite3` connection belongs to the thread that created it. FastAPI runs sync endpoints on a thread pool, so we open a connection per request, and the detection worker has its own. WAL mode lets them read and write together.
+- **No head-of-line blocking:** a capture that keeps failing detection gets `detect_attempts + 1` and is skipped after 3, so it can't block the queue behind it.
+
+---
+
 ## Log: what we actually learned
 
 _Newest first. Add entries as tasks finish._
+
+### 2026-10-25: Phase 2 on real apps
+- 11 live captures from Chrome/Gmail, WhatsApp and Cursor. All were held back (free tier). The capture caught **two commitments while you were typing them**: "i wil submit till 2nd october." (Gmail reply) and "okay i will get to you later." (WhatsApp). That's exactly the demo's raw material.
+- Real data broke four assumptions that the unit tests didn't: rich-text fragments duplicating a draft, invisible U+200E marks on every WhatsApp label, about 45 lines of Gmail boilerplate before the email, and a code editor exposing a 25k-char file as one value. Each one is fixed and now has a test.
+- The signing chain problem (WWDR G3) cost the most time and taught the most: TCC is about identity, not files.
+- Performance: 55–176 ms per read for web and Electron apps, about 600 ms for Notes. At a 5s poll, capture uses well under 5% of one core.
 
 ### 2026-10-25: First live run of Phase 1 (verification)
 - **Detection vs the answer key** (`fixtures/README.md`): 6 expected loops, **5 found, 0 false positives, 1 miss.** Precision 5/5 = 1.00, recall 5/6 = 0.83.

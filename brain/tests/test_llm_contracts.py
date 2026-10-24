@@ -51,7 +51,7 @@ def test_live_detects_the_demo_loop(conn, demo_observations):
     s = get_settings()
     if not s.gemini_api_key:
         pytest.skip("GEMINI_API_KEY not set")
-    obs_id = store.insert_observation(conn, demo_observations[0], demo_observations[0].text)
+    obs_id = store.insert_observation(conn, demo_observations[0])
     loops, _ = detect_loops(LLMClient(s.gemini_api_key.get_secret_value(), s.llm_model),
                             store.get_observation(conn, obs_id), name=s.user_name, email=s.user_email)
     assert len(loops) == 1

@@ -18,11 +18,27 @@ class Settings(BaseSettings):
     user_name: str = "Sehaj Preet"
     user_email: str = "sehaj.demo@example.com"
 
+    # Must match the Swift app, which looks for the token file here.
     data_dir: Path = Path.home() / "Library" / "Application Support" / "ContextAgent"
+
+    port: int = 8765
+    auto_detect: bool = True             # background detection while `brain serve` runs
+    detect_min_interval_s: float = 6.0   # ≤ 10 detection calls a minute
+    # Live screen captures go to Gemini only on the paid tier, unless you opt in (test data only!).
+    allow_free_tier_live: bool = False
 
     @property
     def db_path(self) -> Path:
         return self.data_dir.expanduser() / "brain.db"
+
+    @property
+    def token_path(self) -> Path:
+        return self.data_dir.expanduser() / "brain.token"
+
+    @property
+    def live_detection_allowed(self) -> bool:
+        """ADR-027: free-tier content may be used by Google, so real screens need paid or an explicit opt-in."""
+        return self.gemini_tier == "paid" or self.allow_free_tier_live
 
 
 @lru_cache

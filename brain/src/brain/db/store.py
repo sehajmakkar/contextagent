@@ -14,8 +14,9 @@ from typing import Any
 
 from brain.models import ObservationIn
 
-SCHEMA_VERSION = 1
-_SCHEMA = Path(__file__).with_name("schema.sql")
+_MIGRATIONS = sorted(Path(__file__).with_name("migrations").glob("[0-9][0-9][0-9]_*.sql"))
+SCHEMA_VERSION = len(_MIGRATIONS)
+MAX_DETECT_ATTEMPTS = 3
 
 
 def now() -> str:
@@ -38,10 +39,11 @@ def connect(path: Path | str) -> sqlite3.Connection:
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
+    """Apply migrations/NNN_*.sql in order. Each one runs, with its version bump, in one transaction."""
     version = conn.execute("PRAGMA user_version").fetchone()[0]
-    if version < 1:
-        conn.executescript(_SCHEMA.read_text())
-        conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+    for number, path in enumerate(_MIGRATIONS, start=1):
+        if number > version:
+            conn.executescript(f"BEGIN;\n{path.read_text()}\nPRAGMA user_version = {number};\nCOMMIT;")
 
 
 def content_hash(obs: ObservationIn) -> str:
@@ -55,28 +57,65 @@ def normalize(text: str) -> str:
 
 # --- observations ---------------------------------------------------------
 
-def insert_observation(conn: sqlite3.Connection, obs: ObservationIn, redacted_text: str) -> int | None:
-    """Store an observation. Returns its id, or None if identical content was already stored."""
+def insert_observation(conn: sqlite3.Connection, obs: ObservationIn, source: str = "file") -> int | None:
+    """Store an (already redacted) observation. Returns its id, or None if identical content exists."""
     cur = conn.execute(
         """INSERT OR IGNORE INTO observations
-           (captured_at, app_name, bundle_id, window_title, url, text, content_hash)
-           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+           (captured_at, app_name, bundle_id, window_title, url, text, content_hash, source)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
         (obs.captured_at.isoformat(), obs.app_name, obs.bundle_id, obs.window_title,
-         obs.url, redacted_text, content_hash(obs)),
+         obs.url, obs.text, content_hash(obs), source),
     )
     return cur.lastrowid if cur.rowcount else None
+
+
+def has_content(conn: sqlite3.Connection, obs: ObservationIn) -> bool:
+    return conn.execute("SELECT 1 FROM observations WHERE content_hash = ?", (content_hash(obs),)).fetchone() is not None
 
 
 def get_observation(conn: sqlite3.Connection, obs_id: int) -> sqlite3.Row:
     return conn.execute("SELECT * FROM observations WHERE id = ?", (obs_id,)).fetchone()
 
 
-def unprocessed_observations(conn: sqlite3.Connection) -> list[sqlite3.Row]:
-    return conn.execute("SELECT * FROM observations WHERE processed_at IS NULL ORDER BY captured_at").fetchall()
+def latest_for_window(conn: sqlite3.Connection, bundle_id: str, window_title: str) -> sqlite3.Row | None:
+    return conn.execute(
+        "SELECT * FROM observations WHERE bundle_id = ? AND window_title = ? ORDER BY id DESC LIMIT 1",
+        (bundle_id, window_title),
+    ).fetchone()
+
+
+def unprocessed_observations(conn: sqlite3.Connection, *, include_capture: bool = True,
+                             limit: int | None = None) -> list[sqlite3.Row]:
+    sql = "SELECT * FROM observations WHERE processed_at IS NULL AND detect_attempts < ?"
+    if not include_capture:
+        sql += " AND source != 'capture'"
+    sql += " ORDER BY id"
+    if limit:
+        sql += f" LIMIT {int(limit)}"
+    return conn.execute(sql, (MAX_DETECT_ATTEMPTS,)).fetchall()
 
 
 def mark_processed(conn: sqlite3.Connection, obs_id: int) -> None:
-    conn.execute("UPDATE observations SET processed_at = ? WHERE id = ?", (now(), obs_id))
+    conn.execute("UPDATE observations SET processed_at = ?, detect_error = NULL WHERE id = ?", (now(), obs_id))
+
+
+def record_detect_failure(conn: sqlite3.Connection, obs_id: int, error: str) -> None:
+    conn.execute("UPDATE observations SET detect_attempts = detect_attempts + 1, detect_error = ? WHERE id = ?",
+                 (error[:500], obs_id))
+
+
+def counts(conn: sqlite3.Connection) -> dict[str, int]:
+    row = conn.execute(
+        f"""SELECT
+              (SELECT COUNT(*) FROM observations) AS observations,
+              (SELECT COUNT(*) FROM observations WHERE source = 'capture') AS captured,
+              (SELECT COUNT(*) FROM observations WHERE processed_at IS NULL
+                                                 AND detect_attempts < {MAX_DETECT_ATTEMPTS}) AS pending,
+              (SELECT COUNT(*) FROM observations WHERE processed_at IS NULL
+                                                 AND detect_attempts >= {MAX_DETECT_ATTEMPTS}) AS failed,
+              (SELECT COUNT(*) FROM loops WHERE state = 'open') AS open_loops"""
+    ).fetchone()
+    return dict(row)
 
 
 # --- loops ----------------------------------------------------------------

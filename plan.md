@@ -71,18 +71,22 @@ Backup scenarios (Phase 7): "reply to the recruiter with my availability" (needs
 
 **Goal:** replace fixtures with real screen text, captured safely.
 
-- [ ] Swift menu-bar app that asks for **Accessibility permission** (TCC) and explains why.
-- [ ] Reader that walks the focused window's AX tree and collects app name, bundle ID, window title, browser URL, and visible text.
-- [ ] Triggers: app or window switch, plus a timer every N seconds that only fires if the text changed (content hash).
-- [ ] Denylist (password managers, banking, System Settings), a **Pause** toggle, and a capture indicator.
-- [ ] `POST /observations` to the brain. The brain does **redaction** (regex for keys, cards, OTPs) before storing.
-- [ ] Dedupe near-identical snapshots (hash plus a simple similarity check) so storage doesn't fill up.
-- [ ] `docs/capture-coverage.md`: which apps expose good AX text (Chrome/Gmail, Slack, Notes, VS Code…) and which don't. Apps that don't are skipped, since there's **no screenshot or OCR fallback, by design**.
-- [ ] Live capture checks `GEMINI_TIER`. If it's `free`, the app shows a warning banner (ADR-014).
+- [x] Swift menu-bar app (`app/`, a Swift Package plus `make app` bundling, ADR-028). Signed with your Apple Development identity, so the Accessibility grant survives rebuilds. Permission card in the menu.
+- [x] [WindowTextReader.swift](app/Sources/ContextAgent/Accessibility/WindowTextReader.swift): focused window → web area only → skips chrome landmarks and toolbars → password fields never requested → `AXManualAccessibility` for Chromium/Electron → batched IPC, caps, 0.5s timeout, off the main thread (ADR-031).
+- [x] Triggers: 1s after an app switch, and every 5s. Two-read debounce. Digit-masked "unchanged" check (ADR-030).
+- [x] Always-excluded apps (password managers, Keychain, System Settings), a "Never capture <app>" button, a **Pause** switch, and the menu-bar icon as the capture indicator.
+- [x] Brain: `brain serve` → `POST /observations` / `GET /status` on 127.0.0.1, with token auth and a Host allowlist (ADR-029). Redaction before storage. Migration 002.
+- [x] Near-duplicate filter: masked **new-line** novelty, after two rejected designs (Jaccard, shingle counts) that are now regression tests (ADR-030).
+- [x] Background detection worker: rate-capped, 3 attempts, then skipped.
+- [x] Free-tier guard: captures stored locally and **held back** from Gemini unless paid or `ALLOW_FREE_TIER_LIVE=true`, shown in the menu and in `brain serve` (ADR-027).
+- [x] [docs/capture-coverage.md](docs/capture-coverage.md): Chrome/Gmail, WhatsApp, Cursor (Electron) and Notes measured. Slack and Sheets still to do.
+- [x] Verified on real apps: 11 live captures, including two commitments typed as drafts (Gmail, WhatsApp). Real-data bugs fixed: duplicated rich-text fragments, invisible U+200E marks, Gmail boilerplate (−28% chars), uncapped editor values, and a debounce retry bug.
+- [x] Tests: 24 Python, 12 Swift (`make test`).
+- [ ] **(You, optional)** With only the test Gmail account and synthetic data on screen, run `ALLOW_FREE_TIER_LIVE=true make brain` and check that a typed commitment becomes a loop end to end. Then turn it off again.
 
-**Concepts:** macOS permissions (TCC), the accessibility tree (roles, attributes, focused element), why AX text beats pixels for privacy, sampling and dedupe, PII redaction, data minimization.
-**Decisions:** ADR-005 ✅, 014.
-**Done when:** you open Gmail in Chrome and a clean, redacted observation lands in SQLite within a few seconds.
+**Concepts:** TCC and code signing (designated requirements, certificate chains), the accessibility tree (elements, roles, subroles, ARIA landmarks), AXManualAccessibility, IPC cost and batching, password-field safety, debouncing, near-duplicate detection, localhost security (DNS rebinding, capability tokens), SQLite migrations, threads vs SQLite connections, rate limiting, data governance as code.
+**Decisions:** ADR-005, 014, 027, 028, 029, 030, 031.
+**Done when:** ✅ you open Gmail in Chrome and a clean, redacted observation lands in SQLite within a few seconds (verified 2026-10-25: 01:19:13 capture, held back on the free tier).
 
 ---
 

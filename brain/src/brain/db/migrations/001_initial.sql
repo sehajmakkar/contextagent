@@ -1,4 +1,4 @@
--- Schema v1. Applied when PRAGMA user_version < 1 (see store.py).
+-- Migration 1: initial schema (Phase 1).
 
 CREATE TABLE IF NOT EXISTS observations (
     id            INTEGER PRIMARY KEY,

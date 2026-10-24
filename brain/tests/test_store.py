@@ -4,16 +4,16 @@ from brain.db import store
 
 
 def test_fixtures_load_and_dedupe(conn, demo_observations):
-    ids = [store.insert_observation(conn, o, o.text) for o in demo_observations]
+    ids = [store.insert_observation(conn, o) for o in demo_observations]
     assert all(ids), "every fixture line is distinct content"
     # Ingesting the same file again stores nothing new.
-    assert [store.insert_observation(conn, o, o.text) for o in demo_observations] == [None] * len(ids)
+    assert [store.insert_observation(conn, o) for o in demo_observations] == [None] * len(ids)
     assert len(store.unprocessed_observations(conn)) == len(ids)
 
 
 def test_loop_lifecycle_and_quote_dedupe(conn, demo_observations):
-    first = store.insert_observation(conn, demo_observations[0], demo_observations[0].text)
-    revisit = store.insert_observation(conn, demo_observations[-1], demo_observations[-1].text)
+    first = store.insert_observation(conn, demo_observations[0])
+    revisit = store.insert_observation(conn, demo_observations[-1])
     quote = "Sure, will send them over by Wednesday."
 
     loop_id = store.create_loop(

@@ -14,7 +14,7 @@ def test_untrusted_text_is_not_rendered_as_markup(tmp_path, monkeypatch):
     obs = ObservationIn(captured_at="2026-10-19T10:00:00+05:30", app_name="Mail", bundle_id="x",
                         window_title="[bold]inbox[/bold]", text="Send [available times] please")
     with conn:
-        obs_id = store.insert_observation(conn, obs, obs.text)
+        obs_id = store.insert_observation(conn, obs)
         store.create_loop(conn, observation_id=obs_id, evidence_quote="Send [available times] please",
                           title="Reply with [available times]", direction="i_owe", counterparty="Maya",
                           deliverable="times", due_date=None, confidence=0.9)

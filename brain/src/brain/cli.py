@@ -1,7 +1,8 @@
-"""`brain` command line: ingest → loops → close (the Phase 1 walking skeleton)."""
+"""`brain` command line: ingest → loops → close, plus `serve` for the Swift app."""
 
 import json
 import logging
+from collections import Counter
 from pathlib import Path
 
 import typer
@@ -13,10 +14,10 @@ from rich.table import Table
 from brain.agent.draft import draft_reply
 from brain.config import get_settings
 from brain.db import store
+from brain.ingest import ingest as ingest_observation
 from brain.llm.client import LLMClient, LLMError, Usage
-from brain.loops.detect import detect_loops
+from brain.loops import pipeline
 from brain.models import ObservationIn
-from brain.redact import redact
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
 console = Console()
@@ -60,20 +61,18 @@ def ingest(
 ) -> None:
     """Store observations (redacted, deduplicated), then detect open loops in new ones."""
     conn = _db()
-    new = dupes = 0
+    tally: Counter[str] = Counter()
     for line in path.read_text().splitlines():
         if not line.strip():
             continue
         obs_in = ObservationIn.model_validate_json(line)
-        text, redactions = redact(obs_in.text)
-        if redactions:
-            console.print(f"[yellow]redacted[/] {dict(redactions)} in {_e(repr(obs_in.window_title))}")
         with conn:
-            if store.insert_observation(conn, obs_in, text) is None:
-                dupes += 1
-            else:
-                new += 1
-    console.print(f"{new} new observation(s), {dupes} duplicate(s) skipped")
+            result = ingest_observation(conn, obs_in, source="file")
+        tally[result.status] += 1
+        if result.redactions:
+            console.print(f"[yellow]redacted[/] {dict(result.redactions)} in {_e(repr(obs_in.window_title))}")
+    console.print(f"{tally['stored']} new observation(s), {tally['duplicate']} duplicate(s), "
+                  f"{tally['near_duplicate']} near-duplicate(s) skipped")
     if detect:
         _detect_pending(conn)
 
@@ -89,34 +88,62 @@ def _detect_pending(conn) -> None:
     llm = _llm()
     usages: list[Usage] = []
     created = merged = failed = 0
-    pending = store.unprocessed_observations(conn)
+    todo = pipeline.pending(conn, s)
 
-    for obs in pending:
+    for obs in todo:
         console.print(f"[dim]{obs['captured_at'][:16]} {_e(obs['app_name'])} · {_e(obs['window_title'][:60])}[/]")
-        try:
-            candidates, usage = detect_loops(llm, obs, name=s.user_name, email=s.user_email)
-        except LLMError as e:
+        outcome = pipeline.process(conn, llm, obs, s)
+        if outcome.error:
             failed += 1
-            console.print(f"  [red]detection failed:[/] {_e(e)}")
+            console.print(f"  [red]detection failed:[/] {_e(outcome.error)}")
             continue
-        usages.append(usage)
-        with conn:  # one transaction per observation: its loops + processed flag, or nothing
-            for c in candidates:
-                existing = store.find_open_loop_by_quote(conn, c.evidence_quote)
-                if existing:
-                    store.add_evidence(conn, existing, obs["id"], c.evidence_quote, "progress")
-                    merged += 1
-                    console.print(f"  [blue]↺[/] seen again → loop #{existing}")
-                else:
-                    loop_id = store.create_loop(conn, observation_id=obs["id"], **c.model_dump())
-                    created += 1
-                    console.print(f"  [green]+[/] loop #{loop_id}: {_e(c.title)} [dim]({c.confidence:.2f})[/]")
-            store.mark_processed(conn, obs["id"])
+        usages.append(outcome.usage)
+        for loop_id in outcome.merged:
+            console.print(f"  [blue]↺[/] seen again → loop #{loop_id}")
+        for loop_id, title, confidence in outcome.created:
+            console.print(f"  [green]+[/] loop #{loop_id}: {_e(title)} [dim]({confidence:.2f})[/]")
+        created += len(outcome.created)
+        merged += len(outcome.merged)
 
-    console.print(f"\nProcessed {len(pending) - failed}/{len(pending)} · "
+    console.print(f"\nProcessed {len(todo) - failed}/{len(todo)} · "
                   f"{created} loop(s) created, {merged} merged into existing"
                   + (f" · [red]{failed} failed, run `brain detect` to retry[/]" if failed else ""))
+    if held := pipeline.held_back(conn, s):
+        console.print(f"[yellow]{held} live capture(s) held back:[/] free tier, and ALLOW_FREE_TIER_LIVE is off (ADR-027)")
     _print_usage(usages)
+
+
+@app.command()
+def serve(reload: bool = typer.Option(False, help="Restart on code changes (dev).")) -> None:
+    """Run the local API for the Swift app on 127.0.0.1, with background loop detection."""
+    import uvicorn
+
+    s = get_settings()
+    if not s.live_detection_allowed:
+        console.print("[yellow]Free tier:[/] live captures are stored locally but NOT sent to Gemini (ADR-027).")
+    else:
+        console.print(f"[bold red]Live detection is on[/] ({s.gemini_tier} tier). Captured screen text goes to Gemini.")
+    uvicorn.run("brain.api:app", host="127.0.0.1", port=s.port, reload=reload, log_level="info")
+
+
+@app.command()
+def captures(limit: int = typer.Option(10, help="How many to show."),
+             full: bool = typer.Option(False, help="Print the full captured text.")) -> None:
+    """Show the latest live captures: exactly what was read from your screen."""
+    rows = _db().execute(
+        "SELECT * FROM observations WHERE source = 'capture' ORDER BY id DESC LIMIT ?", (limit,)
+    ).fetchall()
+    if not rows:
+        console.print("No live captures yet. Start [bold]brain serve[/] and the menu-bar app.")
+        return
+    for r in rows:
+        state = "processed" if r["processed_at"] else ("failed" if r["detect_attempts"] >= 3 else "pending")
+        console.print(f"[bold]#{r['id']}[/] {r['captured_at'][:19]} · {_e(r['app_name'])} · "
+                      f"{_e(r['window_title'][:70])} [dim]({len(r['text']):,} chars, {state})[/]")
+        if r["url"]:
+            console.print(f"   [dim]{_e(r['url'][:100])}[/]")
+        body = r["text"] if full else r["text"][:300] + ("…" if len(r["text"]) > 300 else "")
+        console.print(Panel(_e(body), expand=False))
 
 
 @app.command()

@@ -49,6 +49,11 @@ Interview angle: the one-sentence answer to "why?"
 | 024 | Real first: demo mode, fake mailbox, Docker, and recorded responses move to Phase 7 | **Accepted** |
 | 025 | Loop detection v0: one call per observation, confidence ≥ 0.6, grounding check, exact-quote dedupe | **Accepted** |
 | 026 | Actions are risk-classed tools behind connectors, with approval keyed on risk | Proposed (Phase 5) |
+| 027 | Live captures stay local on the free tier; detection needs paid or an explicit opt-in | **Accepted** |
+| 028 | Swift Package + Makefile bundling instead of an `.xcodeproj` | **Accepted** |
+| 029 | Local API auth: 0600 token file + Host-header allowlist + 127.0.0.1 bind | **Accepted** |
+| 030 | Capture triggers and dedupe: app switch + 5s poll, two-read debounce, masked line novelty | **Accepted** |
+| 031 | How we read the AX tree: web area first, AXManualAccessibility, skip secure fields, batched reads, caps | **Accepted** |
 
 ---
 
@@ -329,3 +334,60 @@ Proposed · 2026-10-25 · Phase 5 · refines ADR-011, 012, 013
 **Decision.** B in Phase 5, with Gmail as the only connector. Tools are shaped so that wrapping them as an MCP server in Phase 8 is mechanical.
 **Tradeoffs.** A little more structure than a Gmail-only demo strictly needs. In return, the architecture slide can honestly say "adding WhatsApp is a new connector, not new safety code."
 **Interview angle.** "Safety policy keys on what an action does (read, draft, execute), not on which app it touches, so the system scales to N integrations without N safety reviews."
+
+## ADR-027: Live captures stay local on the free tier; detection needs paid or an explicit opt-in
+
+**Accepted** · 2026-10-25 · Phase 2 · enforces ADR-014
+
+**Context.** Phase 2 puts *your real screen* into the database. On the Gemini free tier, Google may use what we send and have humans review it.
+**Decision.** Every observation records a `source` (`file` or `capture`, migration 002). Detection only picks up `capture` rows when `GEMINI_TIER=paid` or `ALLOW_FREE_TIER_LIVE=true`. Otherwise they're stored locally and counted as **held back**. Both `brain serve` and the menu show which mode you're in. Enforcement sits in one place (`pipeline.pending`), so the CLI and the worker can't disagree.
+**Tradeoffs.** On the free tier, live capture doesn't produce loops until you opt in. That's intended. For the demo, opt in while only the test Gmail account and synthetic data are on screen.
+**Interview angle.** "Data-governance rules are code paths with tests, not a line in the README."
+
+## ADR-028: Swift Package + Makefile bundling instead of an `.xcodeproj`
+
+**Accepted** · 2026-10-25 · Phase 2
+
+**Options.** (A) An Xcode project: GUI-friendly, but `project.pbxproj` is hard to review in a diff and to generate from the CLI. (B) XcodeGen or Tuist: an extra tool to install. (C) **A Swift Package** (`app/Package.swift`) built with `swift build`, plus a `make app` step that wraps the binary in `ContextAgent.app` (Info.plist with `LSUIElement`) and signs it.
+**Decision.** C. Plain text, reviewable, reproducible from the terminal (reviewers run `make app`), and Xcode still opens `Package.swift` for editing and debugging.
+**Tradeoffs.** No asset catalogs or entitlements editor. We don't need them yet. Signing is done by hand with `codesign`.
+**Gotcha.** TCC (the permission system) remembers the Accessibility grant against the app's **code signature**. With an Apple Development identity, it survives rebuilds. With ad-hoc signing (`-`), each build looks like a new app, so you'd have to re-grant (`make reset-permission`).
+
+## ADR-029: Local API auth with a 0600 token file, a Host-header allowlist, and a 127.0.0.1 bind
+
+**Accepted** · 2026-10-25 · Phase 2
+
+**Context.** "It only listens on localhost" isn't security. Any web page you visit can make your browser send requests to `127.0.0.1:8765`, and with **DNS rebinding** it can even read the responses.
+**Decision.** Three layers: (1) bind to 127.0.0.1 only, so nothing on your Wi-Fi can connect. (2) Every request needs `X-Brain-Token`, a random secret the brain writes to `~/Library/Application Support/ContextAgent/brain.token` with `0600` permissions. The Swift app reads it, and a web page can't. The comparison is constant-time (`hmac.compare_digest`). (3) A `TrustedHostMiddleware` allowlist (`127.0.0.1`, `localhost`) rejects rebinding requests, which arrive with a foreign `Host` header.
+**Tradeoffs.** Any process running as *your* user could read the token. That's the normal desktop trust boundary, and the same is true of your SSH keys.
+**Interview angle.** "Localhost services get attacked through the browser. I defend against it with a capability token and Host validation, and tests cover both."
+
+## ADR-030: Capture triggers and dedupe: app switch + 5s poll, two-read debounce, masked line novelty
+
+**Accepted** · 2026-10-25 · Phase 2
+
+**Decision.**
+- **Triggers:** read the frontmost window 1s after every app switch, and every 5s while you stay.
+- **Debounce (app):** send only when the text, with digits masked, is identical on **two reads in a row**. That skips half-typed sentences and pages still loading.
+- **Unchanged (app):** don't resend what was already sent for that window.
+- **Near-duplicate (brain):** within 30 minutes of the last snapshot of the same window, store only if there's at least one **new line**, with digits masked.
+- **Rate cap (brain):** detection starts at most once every 6s (about 10 calls a minute).
+**How we got there:** we tried and rejected (1) Jaccard similarity ≥ 0.9, because one badge change on a short screen fell below the threshold, while a new message in a long Slack channel scored 0.944 and was *dropped*, and (2) a count of new word-triples, because "yep, will do" adds as many as a clock tick. Line novelty fits AX output, which is one UI element per line. Both failures are regression tests.
+**Tradeoffs.** An edit that only changes a number (a due date of 28 → 30) is treated as unchanged. Polling isn't instant. AXObserver notifications could replace it later.
+
+## ADR-031: How we read the AX tree: web area first, AXManualAccessibility, skip secure fields, batched reads, caps
+
+**Accepted** · 2026-10-25 · Phase 2
+
+**Decision.**
+- Read the app's `AXFocusedWindow` (falling back to `AXMainWindow`). If the window contains an `AXWebArea`, read only that, which is the page and not the tabs, toolbar or bookmarks bar. Take the URL from the web area's `AXURL`, **with the query string removed** (it often carries tokens), keeping the fragment (Gmail thread IDs).
+- Set `AXManualAccessibility = true` on every app. Chromium and Electron (Chrome, Slack, VS Code) only build their accessibility tree when an assistive app asks, and other apps ignore the attribute.
+- `AXSecureTextField`: skip the subtree and **never request its value**. Password-manager and system apps are excluded *before* any read happens.
+- Text comes from `AXValue` for text roles and from `AXTitle`/`AXDescription` for headings, links and buttons. Menu bars, scroll bars and images are skipped.
+- Fetch role, subrole and children in **one** IPC call (`AXUIElementCopyMultipleAttributeValues`). Caps: 5,000 nodes, depth 60, 20,000 chars. Messaging timeout 0.5s, so a hung app can't freeze capture. Reads run off the main thread.
+- **Added after testing on real apps (2026-10-25):**
+  - Skip the ARIA landmark subroles Banner, Navigation, Search, Complementary and ContentInfo, and keep Main and Region. On a Gmail thread this cut 28% of the characters.
+  - Once a text field returns its `AXValue`, don't read its children. Rich-text editors repeat the same words as child spans.
+  - Strip invisible direction marks (U+200E and similar). WhatsApp puts them on every label.
+  - Cut a single huge value (a code editor's whole file) to the remaining budget.
+**Tradeoffs.** Canvas-rendered apps (Google Sheets cells, Figma) expose little or no text, and we accept the gap (ADR-005). Off-screen content in a long page may be included up to the cap. Gmail's message toolbar isn't exposed as `AXToolbar`, so about 10 lines of button labels remain.

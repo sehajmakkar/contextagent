@@ -15,5 +15,6 @@ __pycache__/
 # macOS / Xcode
 .DS_Store
 build/
+.build/
 DerivedData/
 xcuserdata/

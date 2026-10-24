@@ -53,7 +53,7 @@ Swift menu-bar app (app/, native)              Python "brain" (brain/, Docker or
 
 - The **brain owns the database.** The Swift app talks to it over HTTP only. It never opens the SQLite file. (ADR-004)
 - **Docker can't run the app.** Docker on macOS is a Linux VM with no access to macOS APIs. Docker runs the brain, and the app always runs natively. (ADR-018)
-- Layout: `brain/` (uv project). It has `src/brain/` with `cli.py`, `config.py` (reads the repo-root `.env`), `models.py` (`ObservationIn`, the contract with the Swift app), `redact.py`, `db/` (`schema.sql`, `store.py`), `llm/client.py`, `loops/detect.py`, and `agent/draft.py`, plus `tests/`. Then `fixtures/sessions/` (synthetic observations, with the answer key in `fixtures/README.md`) and `docs/`. Coming later: `app/` (Xcode, Phase 2), `memory/` (Phase 3), `mailbox/` (Phase 5), `api.py` (Phase 2), `evals/`.
+- Layout: `brain/` (uv project). It has `src/brain/` with `cli.py`, `config.py` (reads the repo-root `.env`), `models.py` (`ObservationIn`, the contract with the Swift app), `redact.py`, `db/` (`schema.sql`, `store.py`), `llm/client.py`, `loops/detect.py`, and `agent/draft.py`, plus `tests/`. Then `fixtures/sessions/` (synthetic observations, with the answer key in `fixtures/README.md`) and `docs/`. Also `ingest.py` (redact → dedupe → store), `api.py` (local HTTP API), `loops/pipeline.py` and `loops/worker.py`, `db/migrations/NNN_*.sql`. Then `app/`, a Swift Package: `Accessibility/` (AXElement, WindowTextReader, AXPermission), `Capture/` (CapturePolicy, AppModel), `Brain/BrainClient.swift`, `Views/MenuView.swift`, `Main.swift` (with `--dump`). Coming later: `memory/` (Phase 3), `mailbox/` (Phase 5), `evals/`.
 
 ## Tech stack (details and reasons in `decisions.md`)
 
@@ -96,6 +96,11 @@ Swift menu-bar app (app/, native)              Python "brain" (brain/, Docker or
 Real paths first. Docker and demo mode come in Phase 7 (ADR-024).
 
 ```bash
+make brain                    # brain API on 127.0.0.1:8765 + background detection (free tier: captures held back)
+make run-app                  # build, sign, and launch the menu-bar app (needs the Accessibility grant)
+make dump BUNDLE=com.google.Chrome   # read one app's window once: text, node count, timing, role histogram
+make test                     # brain (pytest) + app (swift test)
+uv run brain captures [--full]       # (in brain/) exactly what was read from your screen
 cp .env.example .env                                  # add GEMINI_API_KEY (repo root)
 cd brain && uv sync
 
@@ -113,7 +118,7 @@ DATA_DIR=/tmp/ctx uv run brain …                      # use a throwaway DB
 
 ## Where things are tracked
 
-- `plan.md`: phases, tasks, current status. **Current phase: Phase 1 verified live (2026-10-25). Waiting for the user's approval before Phase 2.**
+- `plan.md`: phases, tasks, current status. **Current phase: Phase 2 verified on real apps (2026-10-25). Waiting for the user's approval before Phase 3.**
 - `decisions.md`: ADRs, meaning every decision with its options and tradeoffs.
 - `learnings.md`: concept notes and interview prep, appended after each task.
 - `readme.md`: public pitch plus the reviewer quickstart (rewrite in Phase 7).
