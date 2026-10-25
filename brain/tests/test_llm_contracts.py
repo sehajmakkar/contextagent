@@ -13,7 +13,7 @@ SOURCE = "Priya Sharma <priya.sharma@northwind.example>\nSure, will send them ov
 def _candidate(**overrides) -> LoopCandidate:
     fields = dict(title="Send Priya the numbers", direction="i_owe", counterparty="Priya Sharma",
                   counterparty_email=None, deliverable="Q3 numbers", due_date=date(2026, 10, 21),
-                  evidence_quote="Sure, will send them over by Wednesday.", confidence=0.9)
+                  note="Promised for Wednesday.", evidence_quote="Sure, will send them over by Wednesday.", confidence=0.9)
     return LoopCandidate(**(fields | overrides))
 
 

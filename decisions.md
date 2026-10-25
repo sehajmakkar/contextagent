@@ -62,6 +62,10 @@ Interview angle: the one-sentence answer to "why?"
 | 037 | Handle 429s ourselves: per-minute → wait the server's delay; per-day → stop the batch | **Accepted** |
 | 038 | Retrieval default: hybrid RRF (BM25 + vectors), recency off; duplicates need same kind + nested numbers | **Accepted** |
 | 039 | Flash-Lite (`gemini-3.5-flash-lite`) for testing and evals | **Accepted** |
+| 040 | Loop lifecycle: explicit state machine + transition log; table rebuild with FKs off | **Accepted** |
+| 041 | Loop analysis v2: one call finds new loops and updates tracked ones; self-reminders; semantic dedupe with a judge | **Accepted** |
+| 042 | Model per stage (free tier): Flash-Lite everywhere; 3.8 Flash is the measured upgrade for loop analysis | **Accepted** |
+| 043 | Generator + verifier for closes; judge threshold calibrated at 0.14 | **Accepted** |
 
 ---
 
@@ -475,4 +479,46 @@ Query embedding (network) p50 605 ms. Search itself is under 1 ms locally.
 **Context.** The `gemini-3.8-flash` free tier allows 20 requests a day (challenge #16).
 **Decision.** Set `LLM_MODEL=gemini-3.5-flash-lite` for test and eval runs. The default in `config.py` stays `gemini-3.8-flash` until Phase 4 compares the two on the loop eval.
 **Observed.** On the fixture week, Flash-Lite found **6 of 6** loops (Flash had found 5) with 0 false positives, but got the blog-post loop's counterparty wrong ("Dev"). It extracted 48 memories, mostly standalone and specific. Some low-value ones got through (a pytest failure, a SaaS renewal). 30 calls in about 2 minutes, with no quota errors.
+
+## ADR-040: Loop lifecycle as an explicit state machine with a transition log
+
+**Accepted** · 2026-10-25 · Phase 4
+
+**Decision.** States `open → acting → awaiting_approval → closed | dismissed` with an explicit `ALLOWED` table ([lifecycle.py](brain/src/brain/loops/lifecycle.py)). `closed` and `dismissed` can be reopened. Every change writes a `loop_transitions` row (from, to, actor `system | user | agent`, reason, evidence observation, confidence). `closed_reason` records who closed it (`user`, `inferred`, `agent`), so the inbox can show "closed automatically" differently. Impossible jumps raise `InvalidTransition` (409 from the API).
+**Deviation from the plan.** No `candidate` state: confidence turned out to be uncalibrated (ADR-042), so a "maybe" bucket would hold arbitrary loops. User **dismissals** play that role instead, and are labelled data for the eval.
+**Migration 006** rebuilds `loops` (SQLite can't alter a `CHECK`): create → copy → drop → rename. **Gotcha:** with foreign keys on, `DROP TABLE loops` cascade-deletes all evidence, and `PRAGMA foreign_keys=OFF` is ignored inside a transaction. So the runner switches FKs off *around* the migration transaction and runs `PRAGMA foreign_key_check` afterwards. There's a regression test.
+
+## ADR-041: Loop analysis v2: one call for new loops and tracked-loop updates, self-reminders, and semantic dedupe with a judge
+
+**Accepted** · 2026-10-25 · Phase 4 · replaces ADR-025's detector
+
+**Decision.**
+- One structured call per episode returns `new_loops` and `updates` (`done | progress | still_open` for tracked loops). The prompt lists **related tracked loops**: the counterparty is named on screen, or it's the same window as the loop's evidence. That's chosen locally with no embedding call. Seeing them lets the model close loops *and* avoid recreating them.
+- New direction **`self`** for concrete reminders to yourself (Minimi treats these as loops). Meeting action items assigned to you count as `i_owe`. Each loop gets a **`note`** ("why it's still open") for the inbox.
+- Cross-episode dedupe: exact quote → vector KNN over `loop_vectors` → an LLM **judge** ("same commitment?") only for pairs under the calibrated distance (ADR-043).
+- A "done" below 0.8 confidence, or one the verifier rejects, is recorded as progress evidence, never a close.
+
+## ADR-042: Model per stage (free tier): Flash-Lite everywhere, with 3.8 Flash as the measured upgrade for loop analysis
+
+**Accepted** · 2026-10-25 · Phase 4 · settles ADR-019's per-stage question for now
+
+**Evidence** (`evals/results/`):
+
+| Set | Model | Precision | Recall | Due dates | Unsafe closes |
+|---|---|---|---|---|---|
+| loops (43, written with the prompt) | Flash-Lite | 100% | 100% | 14/14 | 0 |
+| **holdout (16, harder, never tuned on)** | Flash-Lite | **91%** | 100% | 8/8 | 0 |
+| **holdout** | 3.8 Flash | **100%** | 100% | 8/8 | 0 |
+
+**Decision.** Flash-Lite for memory extraction, loop analysis, the judge and the verifier while on the free tier (quota). 3.8 Flash is better on precision (it avoided the FYI-forward false loop), so it's the upgrade for **loop analysis**, the stage you see, once there's a paid key.
+**Confidence threshold stays 0.6, because it doesn't matter.** The sweep (0.5 → 0.9) is flat: the model reports ≥ 0.9 on nearly everything, including its mistakes. Self-reported LLM confidence is **uncalibrated**, so precision has to come from the rules, the verifier and your dismissals.
+
+## ADR-043: Generator + verifier for closes, and a judge threshold calibrated at 0.14
+
+**Accepted** · 2026-10-25 · Phase 4
+
+**Context.** In an end-to-end run, the analysis call closed *"Countersign Contoso renewal"* because Jordan's *NDA* email said "Attached the signed NDA": same person, different deliverable. An unsafe close hides a real deadline.
+**Decision.** Every proposed close goes to [verify.py](brain/src/brain/loops/verify.py), one narrow yes/no call: "does this text show *this exact deliverable* was delivered, or cancelled by the person owed?" Only verified closes happen. Measured: Contoso + NDA email → `false` ("a signed NDA, not the countersigned renewal"). Positive control, "Send Jordan the signed NDA" + the same email → `true`. No real close was vetoed in either eval set (5/5, 1/1).
+**Judge threshold.** Paraphrases of the same loop: 0.022 / 0.041 / 0.105. Closest *different* loops: 0.164 / 0.182 / 0.198 (37 of 55 different pairs were under the original 0.30). So the threshold is 0.14, with at most 2 judge calls per new loop. Calls per fixture run dropped from 92 to 67.
+**Interview angle.** "The riskiest action gets its own narrow verifier. Generation is broad, verification is specific."
 

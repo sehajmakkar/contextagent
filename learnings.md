@@ -416,9 +416,48 @@ Google's 429 body says *which* quota was hit (`QuotaFailure.quotaId`, e.g. `Gene
 
 ---
 
+## Phase 4: the open-loop engine
+
+### State machines for workflow state  (Phase 4 · ADR-040 · [lifecycle.py](brain/src/brain/loops/lifecycle.py))
+**What:** a fixed set of states plus an explicit table of allowed transitions. Any other move is an error.
+**Why:** with a free-form `state` column, bugs create impossible states (a dismissed loop "awaiting approval"). With an `ALLOWED` map, they raise `InvalidTransition`, and the API returns 409.
+**The transition log:** every change records from → to, the **actor** (`system | user | agent`), the reason and the evidence. That gives you an audit trail ("closed by system 1.00: *thanks for the review, fixed and merged!*"), an undo (reopen), and the trust signal the UI needs ("closed automatically" vs "you closed it").
+**Interview Q:** "How do you keep an agent's state changes trustworthy?" → An explicit state machine, every transition attributed and logged with evidence, inferred changes kept distinguishable and reversible.
+
+### SQLite table-rebuild migrations  (Phase 4 · migration 006)
+SQLite's `ALTER TABLE` can't change a `CHECK` constraint, so you rebuild: create `loops_new` → copy → drop `loops` → rename. **The trap:** with foreign keys on, the `DROP` cascade-deletes every child row (loop evidence), and `PRAGMA foreign_keys=OFF` is a silent no-op *inside a transaction*. So switch FKs off outside the transaction, migrate, then run `PRAGMA foreign_key_check` and switch them back on. That's the procedure the SQLite docs recommend, and it has a regression test.
+
+### Generator + verifier  (Phase 4 · ADR-043 · [verify.py](brain/src/brain/loops/verify.py))
+**What:** one broad call generates candidates (new loops, proposed closes), and a narrow second call checks the *risky* ones against one strict question.
+**Why it works:** the generator juggles a whole screen and several loops, so it over-matches ("Jordan + signed" → close the contract loop). The verifier sees one claim and is told what doesn't count ("a signed NDA does not fulfil 'countersign the renewal'").
+**Cost control:** only verify what's both risky and rare (closes), not everything.
+**Always test a verifier both ways:** it must reject the bad claim *and* accept a true one. Ours did both (Contoso → false, NDA loop → true), otherwise "always say no" would look like safety.
+**Interview Q:** "How do you stop an agent from taking a wrong high-impact action?" → A dedicated verifier for that action class, tested on negatives and positive controls, plus reversibility and a log.
+
+### LLM-as-judge for entity resolution  (Phase 4 · [dedupe.py](brain/src/brain/loops/dedupe.py))
+*Entity resolution* means deciding whether two records describe the same real thing. Vectors **nominate** candidates cheaply (KNN), and a small structured judge ("same commitment? same people, same deliverable; Q2 ≠ Q3, #482 ≠ #519") **decides**. Calibrate the nomination threshold on real pairs: same-loop paraphrases were 0.02–0.11, different loops 0.16+, so 0.14, and at most 2 judge calls per loop.
+
+### LLM confidence is uncalibrated  (Phase 4 · ADR-042)
+*Calibrated* would mean "when it says 0.8, it's right 80% of the time". Our sweep from 0.5 to 0.9 was **flat**: the model said ≥ 0.9 on nearly everything, including its false loop. **Lesson:** don't build precision on a self-reported score. Use explicit rules, verifiers, user feedback (dismissals), or a properly calibrated score (for example log-probabilities, or a classifier trained on your labels).
+
+### Leakage and held-out sets  (Phase 4 · challenge #19)
+If the same person writes the prompt's rules and the test cases, the test measures agreement with yourself. A **held-out set** is written to probe *unlisted* behaviour and is scored without tuning on it (tune on it once and it's just another training set). Ours exposed the FYI-forward false loop that the main set couldn't. The gold standard is cases written by someone else, which is why the user is asked to write some.
+
+### Single-screen evals vs end-to-end runs  (Phase 4)
+Two failures appeared **only** in the full pipeline over both fixture weeks: the NDA → Contoso unsafe close, and the meeting-item flake. A single-screen eval checks one call. A sequence checks state: which loops are tracked when, what each screen is shown, how decisions compound. Keep both. Turn every end-to-end failure into a single-screen regression item (`regress-01`).
+
+---
+
 ## Log: what we actually learned
 
 _Newest first. Add entries as tasks finish._
+
+### 2026-10-25: Phase 4 done (the open-loop engine)
+- Loop eval (43): Flash-Lite 100/100. Holdout (16, harder): Flash-Lite P 91% / R 100%, 3.8 Flash P 100% / R 100%. Due dates 22/22 across both, including Hinglish ("kal tak", "next Friday tak") and "next Friday" said on a Friday.
+- End to end: the PR #482 loop auto-closed from Rahul's "merged!". The NDA email wrongly closed the Contoso renewal, which is now blocked by the verifier.
+- Calls per fixture run: 92 → 67 after calibrating the judge threshold.
+- Flat threshold sweep: LLM confidence is uncalibrated.
+- Open product question: track other people's action items from meetings you attend (challenge #22)?
 
 ### 2026-10-25: Phase 3 done (Part C and the funnel)
 

@@ -6,7 +6,9 @@ from brain.db import store
 from brain.ingest import ingest
 from brain.llm.client import Usage
 from brain.loops import pipeline
-from brain.loops.detect import Detection, LoopCandidate
+from brain.loops.detect import LoopAnalysis, LoopCandidate, LoopUpdate
+from brain.loops.dedupe import SameCommitment
+from brain.loops.verify import CloseVerdict
 from brain.memory.extract import Extraction, MemoryItem
 from brain.models import ObservationIn
 
@@ -46,6 +48,12 @@ class StubLLM:
     """Returns canned structured output, so the test checks our pipeline, not the model."""
     model = "stub"
 
+    def __init__(self, updates=None, new_loops=True, verifier_agrees=True):
+        self.updates, self.new_loops, self.verifier_agrees = updates or [], new_loops, verifier_agrees
+
+    def embed(self, text, *, model, dims):
+        return [1.0] + [0.0] * (dims - 1)  # every loop "looks alike": the judge must decide
+
     def generate_structured(self, *, schema, system, prompt, thinking_level):
         usage = Usage("stub", 100, 20, 0, 1)
         if schema is Extraction:
@@ -54,10 +62,15 @@ class StubLLM:
                            quote=REPLY, entities=["Priya", "Q3 retention"]),
                 MemoryItem(kind="fact", text="An invented fact.", quote="text that is not on screen", entities=[]),
             ]), usage
-        return Detection(loops=[LoopCandidate(
+        if schema is SameCommitment:
+            return SameCommitment(same=False, reason="different"), usage
+        if schema is CloseVerdict:
+            return CloseVerdict(fulfilled=self.verifier_agrees, reason="stub"), usage
+        loops = [LoopCandidate(
             title="Send Priya the Q3 retention numbers", direction="i_owe", counterparty="Priya Sharma",
-            counterparty_email=None, deliverable="Q3 retention numbers", due_date=None,
-            evidence_quote=REPLY, confidence=0.95)]), usage
+            counterparty_email=None, deliverable="Q3 retention numbers", note="Promised for Wednesday.",
+            due_date=None, evidence_quote=REPLY, confidence=0.95)] if self.new_loops else []
+        return LoopAnalysis(new_loops=loops, updates=self.updates), usage
 
 
 def test_pipeline_stores_grounded_memories_and_loops_with_provenance(conn):
@@ -72,7 +85,7 @@ def test_pipeline_stores_grounded_memories_and_loops_with_provenance(conn):
     memory = conn.execute("SELECT * FROM memories").fetchone()
     assert memory["observation_id"] == reply.observation_id   # the snapshot that actually contains the quote
     assert len(outcome.created) == 1
-    assert conn.execute("SELECT llm_calls FROM episodes").fetchone()[0] == 2
+    assert conn.execute("SELECT llm_calls FROM episodes").fetchone()[0] == 2  # no look-alike yet: no judge call
     assert pipeline.pending(conn, settings) == []
     # FTS5 index stays in sync through the trigger.
     assert conn.execute("SELECT COUNT(*) FROM memories_fts WHERE memories_fts MATCH 'retention'").fetchone()[0] == 1
@@ -102,3 +115,49 @@ def test_retention_erases_only_old_processed_snapshots(conn):
     assert erased == 1  # the processed one; the unprocessed one is kept until it's distilled
     assert conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0] == 1  # memories survive
     assert store.find_open_loop_by_quote(conn, REPLY) is not None             # loop evidence survives
+
+
+def test_a_later_screen_closes_the_loop_with_evidence(conn):
+    ingest(conn, _obs(f"{ASK}\n{REPLY}"), "file")
+    [ep] = pipeline.pending(conn, Settings())
+    pipeline.process(conn, StubLLM(), ep, Settings())
+    loop_id = conn.execute("SELECT id FROM loops").fetchone()[0]
+
+    sent = "Sehaj: here are the Q3 retention numbers, 63.6% blended M1"
+    ingest(conn, _obs(f"{ASK}\n{REPLY}\n{sent}", minutes=60 * 24), "file")
+    [ep2] = pipeline.pending(conn, Settings())
+    done = LoopUpdate(loop_id=loop_id, status="done", evidence_quote=sent, confidence=0.9)
+    outcome = pipeline.process(conn, StubLLM(updates=[done], new_loops=False), ep2, Settings())
+
+    assert outcome.closed == [loop_id]
+    row = conn.execute("SELECT state, closed_reason FROM loops").fetchone()
+    assert (row["state"], row["closed_reason"]) == ("closed", "inferred")
+    assert [e["kind"] for e in store.get_evidence(conn, loop_id)][-1] == "closed"
+
+
+def test_a_low_confidence_done_is_only_progress(conn):
+    ingest(conn, _obs(f"{ASK}\n{REPLY}"), "file")
+    [ep] = pipeline.pending(conn, Settings())
+    pipeline.process(conn, StubLLM(), ep, Settings())
+    loop_id = conn.execute("SELECT id FROM loops").fetchone()[0]
+    ingest(conn, _obs(f"{ASK}\n{REPLY}\nSehaj: almost done with the numbers", minutes=60 * 24), "file")
+    [ep2] = pipeline.pending(conn, Settings())
+    maybe = LoopUpdate(loop_id=loop_id, status="done", evidence_quote="Sehaj: almost done with the numbers", confidence=0.5)
+    outcome = pipeline.process(conn, StubLLM(updates=[maybe], new_loops=False), ep2, Settings())
+    assert outcome.closed == [] and outcome.progressed == [loop_id]
+    assert conn.execute("SELECT state FROM loops").fetchone()[0] == "open"
+
+
+def test_the_verifier_can_veto_a_close(conn):
+    """Regression: the NDA email 'closed' the Contoso renewal loop in an end-to-end run."""
+    ingest(conn, _obs(f"{ASK}\n{REPLY}"), "file")
+    [ep] = pipeline.pending(conn, Settings())
+    pipeline.process(conn, StubLLM(), ep, Settings())
+    loop_id = conn.execute("SELECT id FROM loops").fetchone()[0]
+    other = "Sehaj: attached the signed NDA"
+    ingest(conn, _obs(f"{ASK}\n{other}", minutes=60 * 24), "file")
+    [ep2] = pipeline.pending(conn, Settings())
+    claim = LoopUpdate(loop_id=loop_id, status="done", evidence_quote=other, confidence=0.95)
+    outcome = pipeline.process(conn, StubLLM(updates=[claim], new_loops=False, verifier_agrees=False), ep2, Settings())
+    assert outcome.closed == [] and conn.execute("SELECT state FROM loops").fetchone()[0] == "open"
+

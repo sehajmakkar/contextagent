@@ -45,11 +45,24 @@ def connect(path: Path | str) -> sqlite3.Connection:
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
-    """Apply migrations/NNN_*.sql in order. Each one runs, with its version bump, in one transaction."""
+    """Apply migrations/NNN_*.sql in order. Each one runs, with its version bump, in one transaction.
+
+    Foreign keys are switched off while migrating: a table rebuild (create new → copy → DROP old → rename)
+    would otherwise cascade-delete every child row on the DROP. The switch must happen *outside* the
+    transaction, because SQLite silently ignores PRAGMA foreign_keys inside one. Integrity is checked after.
+    """
     version = conn.execute("PRAGMA user_version").fetchone()[0]
-    for number, path in enumerate(_MIGRATIONS, start=1):
-        if number > version:
-            conn.executescript(f"BEGIN;\n{path.read_text()}\nPRAGMA user_version = {number};\nCOMMIT;")
+    if version >= SCHEMA_VERSION:
+        return
+    conn.execute("PRAGMA foreign_keys=OFF")
+    try:
+        for number, path in enumerate(_MIGRATIONS, start=1):
+            if number > version:
+                conn.executescript(f"BEGIN;\n{path.read_text()}\nPRAGMA user_version = {number};\nCOMMIT;")
+        if broken := conn.execute("PRAGMA foreign_key_check").fetchall():
+            raise RuntimeError(f"migration left {len(broken)} dangling foreign key(s): {broken[:3]}")
+    finally:
+        conn.execute("PRAGMA foreign_keys=ON")
 
 
 def content_hash(obs: ObservationIn) -> str:
@@ -138,15 +151,21 @@ def counts(conn: sqlite3.Connection) -> dict[str, int]:
 def create_loop(conn: sqlite3.Connection, *, observation_id: int, evidence_quote: str, **fields: Any) -> int:
     ts = now()
     due = fields.get("due_date")
+    source_app = conn.execute("SELECT app_name FROM observations WHERE id = ?", (observation_id,)).fetchone()
     cur = conn.execute(
-        """INSERT INTO loops (title, direction, counterparty, counterparty_email, deliverable,
-                              due_date, confidence, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        """INSERT INTO loops (title, direction, counterparty, counterparty_email, deliverable, note,
+                              due_date, confidence, source_app, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (fields["title"], fields["direction"], fields["counterparty"], fields.get("counterparty_email"),
-         fields["deliverable"], due.isoformat() if due else None, fields["confidence"], ts, ts),
+         fields["deliverable"], fields.get("note"), due.isoformat() if due else None, fields["confidence"],
+         source_app["app_name"] if source_app else None, ts, ts),
     )
     loop_id = cur.lastrowid
     add_evidence(conn, loop_id, observation_id, evidence_quote, "created")
+    # Local import: lifecycle imports store.now, so importing it at module level would be circular.
+    from brain.loops.lifecycle import record_created
+    record_created(conn, loop_id, reason="detected", observation_id=observation_id,
+                   confidence=fields["confidence"])
     return loop_id
 
 

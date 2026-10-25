@@ -3,6 +3,7 @@
 import json
 import logging
 import time
+from datetime import UTC, datetime
 from collections import Counter
 from pathlib import Path
 
@@ -18,7 +19,7 @@ from brain.db import store
 from brain import episodes, retention
 from brain.ingest import ingest as ingest_observation
 from brain.llm.client import LLMClient, LLMError, Usage
-from brain.loops import pipeline
+from brain.loops import lifecycle, pipeline
 from brain.memory import embed as embedding
 from brain.memory import retrieve
 from brain.models import ObservationIn
@@ -82,9 +83,15 @@ def ingest(
 
 
 @app.command(name="process")
-def process_cmd() -> None:
+def process_cmd(close_now: bool = typer.Option(False, "--close-now",
+                                              help="Treat every open episode as finished (for testing; skips the 5-min wait).")) -> None:
     """Process closed episodes that haven't been processed yet: memories + loops (also retries failures)."""
-    _detect_pending(_db())
+    conn = _db()
+    if close_now:
+        with conn:
+            n = episodes.close_stale(conn, current=datetime.max.replace(tzinfo=UTC))
+        console.print(f"[dim]Closed {n} open episode(s) early.[/]")
+    _detect_pending(conn)
 
 
 @app.command(name="detect", hidden=True)
@@ -120,6 +127,10 @@ def _detect_pending(conn) -> None:
             console.print(f"  [magenta]•[/] {_e(text)}")
         for loop_id in outcome.merged:
             console.print(f"  [blue]↺[/] seen again → loop #{loop_id}")
+        for loop_id in outcome.closed:
+            console.print(f"  [green]✓[/] loop #{loop_id} closed (inferred from this screen)")
+        for loop_id in outcome.progressed:
+            console.print(f"  [blue]…[/] progress on loop #{loop_id}")
         for loop_id, title, confidence in outcome.created:
             console.print(f"  [green]+[/] loop #{loop_id}: {_e(title)} [dim]({confidence:.2f})[/]")
         created += len(outcome.created)
@@ -274,11 +285,11 @@ def loops(all: bool = typer.Option(False, "--all", help="Include closed and dism
     for col in ("#", "Who", "Loop", "Due", "Conf", "Seen", "State"):
         table.add_column(col)
     for r in rows:
-        who = ("→ " if r["direction"] == "i_owe" else "← ") + _e(r["counterparty"])
+        who = {"i_owe": "→ ", "they_owe": "← ", "self": "• "}[r["direction"]] + _e(r["counterparty"])
         table.add_row(str(r["id"]), who, _e(r["title"]), r["due_date"] or "—", f"{r['confidence']:.2f}",
                       f"{r['evidence_count']}×", r["state"])
     console.print(table)
-    console.print("[dim]→ you owe them · ← they owe you[/]")
+    console.print("[dim]→ you owe them · ← they owe you · • reminder to yourself[/]")
 
 
 @app.command()
@@ -298,6 +309,48 @@ def show(loop_id: int) -> None:
     for e in store.get_evidence(conn, loop_id):
         console.print(f"  {_e('[' + e['kind'] + ']')} {e['captured_at']} · {_e(e['app_name'])} · {_e(e['window_title'])}")
         console.print(f"    “{_e(e['quote'])}”")
+
+
+def _transition(loop_id: int, to: str, reason: str) -> None:
+    conn = _db()
+    try:
+        with conn:
+            lifecycle.transition(conn, loop_id, to, actor="user", reason=reason)
+    except lifecycle.InvalidTransition as e:
+        console.print(f"[red]{_e(e)}[/]")
+        raise typer.Exit(1)
+    console.print(f"Loop #{loop_id} → {to}")
+
+
+@app.command()
+def resolve(loop_id: int, note: str = typer.Option("resolved by you", help="Why it's done.")) -> None:
+    """Mark a loop done yourself (Minimi's "Resolve")."""
+    _transition(loop_id, "closed", note)
+
+
+@app.command()
+def dismiss(loop_id: int, note: str = typer.Option("not a loop", help="Why it isn't a loop.")) -> None:
+    """Not a real loop. Dismissals are labelled examples for the loop eval."""
+    _transition(loop_id, "dismissed", note)
+
+
+@app.command()
+def reopen(loop_id: int, note: str = typer.Option("reopened by you")) -> None:
+    """Undo a close or a dismissal (e.g. an inferred close that was wrong)."""
+    _transition(loop_id, "open", note)
+
+
+@app.command()
+def history(loop_id: int) -> None:
+    """Every state change of a loop: who made it, why, and on what evidence."""
+    rows = lifecycle.history(_db(), loop_id)
+    if not rows:
+        console.print(f"[red]No loop #{loop_id}[/]")
+        raise typer.Exit(1)
+    for h in rows:
+        conf = f" ({h['confidence']:.2f})" if h["confidence"] is not None else ""
+        console.print(f"{h['created_at'][:19]}  {h['from_state'] or '·'} → [bold]{h['to_state']}[/]  "
+                      f"[cyan]{h['actor']}[/]{conf}  {_e(h['reason'])}")
 
 
 @app.command()

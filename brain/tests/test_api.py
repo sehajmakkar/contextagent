@@ -55,3 +55,25 @@ def test_capture_is_stored_but_held_back_on_free_tier(client):
 def test_invalid_payload_is_422(client):
     r = client.post("/observations", json={**OBS, "text": ""}, headers={"X-Brain-Token": client.token})
     assert r.status_code == 422
+
+
+def test_inbox_lists_and_resolves_loops(client):
+    from datetime import date
+
+    from brain.db import store
+    from brain.models import ObservationIn
+    conn = store.connect(get_settings().db_path)
+    with conn:
+        obs_id = store.insert_observation(conn, ObservationIn(**OBS))
+        store.create_loop(conn, observation_id=obs_id, evidence_quote="Can you send the deck by Friday?",
+                          title="Send the deck", direction="i_owe", counterparty="Jordan Lee", deliverable="deck",
+                          note="Asked for Friday.", due_date=date(2026, 10, 30), confidence=0.9)
+    h = {"X-Brain-Token": client.token}
+    [loop] = client.get("/loops", headers=h).json()
+    assert (loop["source_app"], loop["quote"], loop["window_title"]) == ("Google Chrome", "Can you send the deck by Friday?", "Inbox - Gmail")
+
+    assert client.post(f"/loops/{loop['id']}/transition", json={"to": "closed"}, headers=h).json()["closed_reason"] == "user"
+    assert client.get("/loops", headers=h).json() == []
+    # dismissing a closed loop isn't an allowed transition: 409, state unchanged
+    assert client.post(f"/loops/{loop['id']}/transition", json={"to": "dismissed"}, headers=h).status_code == 409
+

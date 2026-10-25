@@ -16,6 +16,8 @@ Sources: Minimi's public site (read 2026-10-24) and your own use of the app, inc
 
 **Compact panel:** the same inbox in a small pinnable window. Open loops appear with a **Resolve** button that turns them into closed loops.
 
+**Open-loop cards** (third screenshot): a filter row (All / Google Chrome / WhatsApp). Each card has the source app icon, window or chat ("You (self-message)"), a title ("Email resume to … for Strelema role"), a one-line *why* ("no deadline is listed"), and the **source quote**. **Self-messages count as loops.**
+
 ## Observations (where we differ)
 
 1. **Memory quality.** Several "memories" in your screenshot are UI state, not knowledge: *"You are logged into LinkedIn as Sehaj Preet"*, *"You have 2 Network and 8 other new notifications"*, *"You are currently active on LinkedIn."* Our extractor explicitly rejects app chrome, notifications and generic content, and requires standalone sentences with names, figures and dates (ADR-034). Some memories are also vague (*"MAIT achieved multiple top rankings"*, *"You and Kunwar Anmol Singh discussed an interview"*: which interview, and when?).
@@ -25,6 +27,7 @@ Sources: Minimi's public site (read 2026-10-24) and your own use of the app, inc
 
 ## Ideas to borrow for Phase 6
 
+- Loop cards with an app filter row, source quote and a "why still open" line. Our API already returns `source_app`, `window_title`, `quote` and `note` per loop.
 - The two-pane dashboard (Inbox + Recent memories) and the compact pinned panel.
 - The app icon next to each memory (provenance at a glance).
 - A greeting with an empty state that reassures ("You're all set").

@@ -24,6 +24,10 @@ Status: ✅ solved · 🟡 partly solved / stopgap · 🔵 proposed (not built y
 | 16 | Free tier: 20 requests/day, and retries that made it worse | 3 | ✅ fail-fast + Flash-Lite |
 | 17 | Duplicate detection merged two different facts (Q2 vs Q3) | 3 | ✅ |
 | 18 | An eval that said 100%: ceiling effects and RRF's blind spot | 3 | ✅ measured, documented |
+| 19 | The loop eval said 100% because I wrote it *and* the prompt | 4 | ✅ held-out set |
+| 20 | An inferred close hid a real deadline (NDA email ≠ contract renewal) | 4 | ✅ verifier |
+| 21 | Dedupe judge called on almost everything (wrong threshold) | 4 | ✅ calibrated |
+| 22 | A flaky loop that was really a contradiction in the spec | 4 | 🔵 your product decision |
 
 ---
 
@@ -172,4 +176,32 @@ Status: ✅ solved · 🟡 partly solved / stopgap · 🔵 proposed (not built y
 **What we did.** Added Recall@1 and MRR, separated **extraction misses** (no memory existed) from retrieval misses, and looked at per-query ranks. Recall@1: vector 90% = hybrid 90% > BM25 84% > hybrid+recency 81%. Per-query ranks showed the textbook pattern: BM25 wins exact tokens (`PR #519`), vectors win paraphrases ("current price of Pro"), and RRF demotes results only one retriever finds ("cohort chart": vector 3 → hybrid 6).
 **Honesty.** The differences are 1–3 queries out of 31, so we chose hybrid for robustness (exact IDs, offline BM25) and didn't tune weights on a set that small.
 **Pitch line.** "When my eval said 100%, I made it harder rather than trusting it, and I can tell you which queries each retriever wins and why."
+
+## 19. The loop eval said 100%, because I wrote it *and* the prompt ✅
+
+**Situation.** 43 labelled screens: precision, recall, due dates and closes all perfect.
+**Why that's suspicious.** I wrote the prompt's "not a loop" list and the eval's tricky cases with the same categories in mind (self-reminders, Hinglish, group asks, injection). That's **leakage**: it measures how well the prompt matches its author's test, not how it generalises.
+**What worked.** A **held-out set** of 16 harder cases the prompt never names: implicit commitments ("sounds good, I'll send slots tomorrow"), promises in quoted history, assignment on your behalf, "next Friday" said on a Friday, two commitments in one message, a close in a different app, an FYI forward. Scored once, never tuned on. Flash-Lite: precision **91%** (it fell for the FYI forward), recall 100%, due dates 8/8. 3.8 Flash: 100%.
+**Also found.** The confidence-threshold sweep was flat: **LLM self-reported confidence is uncalibrated** (0.9+ even on its mistake).
+**Pitch line.** "A perfect score on a test I wrote was evidence of leakage, so I built a held-out set and found the real failure mode."
+
+## 20. An inferred close hid a real deadline ✅
+
+**Situation.** End-to-end, Rahul's "merged!" correctly auto-closed the PR loop. But Jordan's *"Attached the signed NDA"* also closed **"Countersign the Contoso renewal (due Nov 15)"**: same person, different document. The deadline silently left the inbox.
+**Why it's hard.** The analysis call sees a whole screen and several tracked loops at once, so "Jordan + signed" over-matched. It didn't even reproduce in the single-screen eval: model output varies between runs.
+**What worked.** **Generator + verifier.** Every proposed close gets one narrow call that may only say yes for *this exact deliverable*. Contoso + NDA → false. Positive control (an NDA loop + the same email) → true. 0 real closes vetoed. Closes are rare, so the extra cost is negligible. The case is now a regression item in the eval.
+**Pitch line.** "I gave the riskiest action its own verifier. Generation is broad, verification is narrow."
+
+## 21. The dedupe judge ran on almost everything ✅
+
+**Situation.** A full fixture run made **92 LLM calls for 33 episodes**, 26 of them judge calls.
+**Why.** Loops are short imperative sentences ("Send X the Y"), so they cluster: **37 of 55 different-loop pairs** were under my 0.30 threshold.
+**What worked.** Measured both sides. Paraphrases of the same loop: 0.022 / 0.041 / 0.105. Closest different loops: 0.164+. Threshold 0.14, with at most 2 judge calls. Calls dropped to 67.
+**Pitch line.** "Every threshold in this system was set from measured positive and negative pairs, not picked."
+
+## 22. A flaky loop that was really a spec contradiction 🔵
+
+**Situation.** *"Confirm the launch date with marketing"* ← Priya appears in some full runs and not others.
+**Root cause.** My prompt says "other people's meeting action items are not loops", but also defines they_owe as "owed to the user **or a group the user is in**". Priya's item is owed to the team you're in. The model resolves the contradiction differently on each run.
+**Next.** A product decision: should "waiting on" items from meetings you attend be tracked as they_owe? (A dependency tracker, but noisier.)
 

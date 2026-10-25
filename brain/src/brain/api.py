@@ -21,7 +21,7 @@ from pydantic import BaseModel
 from brain.config import Settings, get_settings
 from brain.db import store
 from brain.ingest import ingest
-from brain.loops import pipeline
+from brain.loops import lifecycle, pipeline
 from brain.loops.worker import DetectionWorker
 from brain.models import ObservationIn
 
@@ -118,3 +118,56 @@ def status(request: Request, conn: sqlite3.Connection = Depends(db)) -> StatusRe
         last_capture_at=datetime.fromisoformat(last) if last else None,
         last_error=worker.last_error if worker else None,
     )
+
+
+class LoopOut(BaseModel):
+    id: int
+    title: str
+    direction: Literal["i_owe", "they_owe", "self"]
+    counterparty: str
+    deliverable: str
+    note: str | None
+    due_date: str | None
+    state: str
+    closed_reason: str | None
+    confidence: float
+    source_app: str | None
+    window_title: str | None
+    quote: str | None
+    seen: int
+    updated_at: str
+
+
+class TransitionIn(BaseModel):
+    to: Literal["closed", "dismissed", "open"]
+    reason: str = "from the inbox"
+
+
+@app.get("/loops", response_model=list[LoopOut], dependencies=[Depends(require_token)])
+def list_loops(state: Literal["open", "closed", "all"] = "open", conn: sqlite3.Connection = Depends(db)) -> list[LoopOut]:
+    """For the inbox: each loop with its source app, window and the quote that created it (like Minimi's cards)."""
+    states = {"open": ("open", "acting", "awaiting_approval"), "closed": ("closed",), "all": None}[state]
+    sql = """SELECT l.*, (SELECT COUNT(*) FROM loop_evidence e WHERE e.loop_id = l.id) AS seen,
+                    (SELECT e.quote FROM loop_evidence e WHERE e.loop_id = l.id ORDER BY e.id LIMIT 1) AS quote,
+                    (SELECT o.window_title FROM loop_evidence e JOIN observations o ON o.id = e.observation_id
+                     WHERE e.loop_id = l.id ORDER BY e.id LIMIT 1) AS window_title
+             FROM loops l"""
+    params: tuple = ()
+    if states:
+        sql += f" WHERE l.state IN ({','.join('?' * len(states))})"
+        params = states
+    sql += " ORDER BY l.due_date IS NULL, l.due_date, l.updated_at DESC"
+    return [LoopOut(**{k: r[k] for k in LoopOut.model_fields}) for r in conn.execute(sql, params).fetchall()]
+
+
+@app.post("/loops/{loop_id}/transition", response_model=LoopOut, dependencies=[Depends(require_token)])
+def transition_loop(loop_id: int, body: TransitionIn, conn: sqlite3.Connection = Depends(db)) -> LoopOut:
+    """Resolve, dismiss or reopen from the inbox. The user is the actor; "acting" and "awaiting_approval"
+    belong to the agent (Phase 5), so the inbox can't set them."""
+    try:
+        with conn:
+            lifecycle.transition(conn, loop_id, body.to, actor="user", reason=body.reason)
+    except lifecycle.InvalidTransition as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+    return next(item for item in list_loops("all", conn) if item.id == loop_id)
+
