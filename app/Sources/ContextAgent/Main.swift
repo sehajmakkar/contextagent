@@ -8,6 +8,9 @@ enum Main {
         // Launch it with `make dump` (via `open`), so it runs under the app's own Accessibility grant.
         if let i = CommandLine.arguments.firstIndex(of: "--dump") {
             DumpCommand.run(arguments: Array(CommandLine.arguments[(i + 1)...]))
+        } else if let i = CommandLine.arguments.firstIndex(of: "--events") {
+            // `--events <bundle-id> <seconds> --out file`: which change notifications does this app really send?
+            MainActor.assumeIsolated { EventsCommand.run(arguments: Array(CommandLine.arguments[(i + 1)...])) }
         } else {
             ContextAgentApp.main()
         }
@@ -49,7 +52,7 @@ enum DumpCommand {
             finish(["error": "no focused or main window"], to: out)
         }
         finish(["app": s.appName, "bundle_id": s.bundleID, "window_title": s.windowTitle, "url": s.url ?? NSNull(),
-                "chars": s.text.count, "nodes_visited": s.nodesVisited, "truncated": s.truncated,
+                "chars": s.text.count, "nodes_visited": s.nodesVisited, "truncated": s.truncated, "clipped_to_visible": s.clippedToVisible, "offscreen_skipped": s.offscreenSkipped,
                 "elapsed_ms": s.elapsedMs, "roles": roleHistogram(pid: app.processIdentifier), "text": s.text], to: out)
     }
 
@@ -78,5 +81,31 @@ enum DumpCommand {
             FileHandle.standardOutput.write(data)
         }
         exit(object["error"] == nil ? 0 : 1)
+    }
+}
+
+@MainActor
+enum EventsCommand {
+    static func run(arguments: [String]) {
+        let out = arguments.firstIndex(of: "--out").flatMap { arguments.indices.contains($0 + 1) ? arguments[$0 + 1] : nil }
+        guard let bundleID = arguments.first,
+              let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first else {
+            write(["error": "usage: --events <running bundle-id> <seconds> --out file"], to: out)
+            exit(1)
+        }
+        let seconds = arguments.count > 1 ? Double(arguments[1]) ?? 10 : 10
+        var counts: [String: Int] = [:]
+        let source = AXEventSource { counts[$0, default: 0] += 1 }
+        source.observe(pid: app.processIdentifier)
+        let registered = source.registered
+        RunLoop.main.run(until: Date().addingTimeInterval(seconds))  // callbacks arrive on this run loop
+        write(["app": bundleID, "seconds": seconds, "registered": registered,
+               "of": AXEventSource.notifications.count, "counts": counts], to: out)
+        exit(0)
+    }
+
+    private static func write(_ object: [String: Any], to path: String?) {
+        let data = (try? JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys])) ?? Data()
+        if let path { FileManager.default.createFile(atPath: path, contents: data) } else { FileHandle.standardOutput.write(data) }
     }
 }

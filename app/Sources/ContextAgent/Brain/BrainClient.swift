@@ -27,10 +27,11 @@ struct BrainClient: Sendable {
         let windowTitle: String
         let url: String?
         let text: String
+        let trigger: String
 
         enum CodingKeys: String, CodingKey {
             case capturedAt = "captured_at", appName = "app_name", bundleId = "bundle_id"
-            case windowTitle = "window_title", url, text
+            case windowTitle = "window_title", url, text, trigger
         }
     }
 
@@ -51,10 +52,10 @@ struct BrainClient: Sendable {
         let lastError: String?
     }
 
-    func post(_ snapshot: WindowSnapshot, capturedAt: Date = .now) async throws -> IngestResponse {
+    func post(_ snapshot: WindowSnapshot, trigger: String, capturedAt: Date = .now) async throws -> IngestResponse {
         let body = Observation(capturedAt: Self.localTimestamp(capturedAt), appName: snapshot.appName,
                                bundleId: snapshot.bundleID, windowTitle: snapshot.windowTitle,
-                               url: snapshot.url, text: snapshot.text)
+                               url: snapshot.url, text: snapshot.text, trigger: trigger)
         var request = try authorized("observations")
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")

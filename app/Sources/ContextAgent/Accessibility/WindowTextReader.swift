@@ -9,6 +9,10 @@ struct WindowSnapshot: Sendable, Equatable {
     var text: String
     var nodesVisited: Int
     var truncated: Bool
+    /// How many long text areas were read as their visible slice only.
+    var clippedToVisible: Int = 0
+    /// Subtrees skipped because they were scrolled out of the window.
+    var offscreenSkipped: Int = 0
     var elapsedMs: Int
 }
 
@@ -44,21 +48,32 @@ struct WindowTextReader: Sendable {
         let root = webArea ?? window
         let url = webArea.flatMap { ($0.attribute(AX.url) as? URL).map(Self.redactQuery) }
 
+        // Only what's on screen: elements whose frame lies outside the window (scrolled-away chat history,
+        // the rest of a long thread) are skipped with their subtree.
+        let visibleRect = window.frame
         var collector = TextCollector(maxChars: maxChars)
         var stack: [(AXElement, Int)] = [(root, 0)]
         var visited = 0
+        var clipped = 0
+        var offscreen = 0
         while let (element, depth) = stack.popLast() {
             visited += 1
             if visited > maxNodes || collector.isFull { break }
 
-            let basics = element.attributes([AX.role, AX.subrole, AX.children])
+            let basics = element.attributes([AX.role, AX.subrole, AX.children, AX.position, AX.size])
             let role = basics[AX.role] as? String ?? ""
             let subrole = basics[AX.subrole] as? String ?? ""
             // Password fields: skip the subtree and never request the value.
             if role == AX.secureTextField || subrole == AX.secureTextField { continue }
             if Self.skipRoles.contains(role) || Self.skipSubroles.contains(subrole) { continue }
+            if let visibleRect, let frame = AXElement.frame(position: basics[AX.position], size: basics[AX.size]),
+               !Self.isVisible(frame, in: visibleRect) {
+                offscreen += 1
+                continue
+            }
 
-            if Self.valueRoles.contains(role), let text = element.string(AX.value), !text.isEmpty {
+            if Self.valueRoles.contains(role), let text = Self.visibleText(of: element, role: role, clipped: &clipped)
+                ?? element.string(AX.value), !text.isEmpty {
                 collector.add(text)
                 // Rich-text editors (Gmail compose) also expose the same words as child spans. Don't read them twice.
                 continue
@@ -78,8 +93,34 @@ struct WindowTextReader: Sendable {
         return WindowSnapshot(
             appName: appName, bundleID: bundleID, windowTitle: title, url: url, text: collector.text,
             nodesVisited: visited, truncated: visited > maxNodes || collector.isFull,
-            elapsedMs: Int(Date().timeIntervalSince(start) * 1000)
+            clippedToVisible: clipped, offscreenSkipped: offscreen, elapsedMs: Int(Date().timeIntervalSince(start) * 1000)
         )
+    }
+
+    /// - 0×0 frames are common on containers and mean "unknown", so they never cull.
+    /// - Chromium clamps scrolled-away elements to the edge of their scroll area as a 1pt sliver
+    ///   (measured in Cursor's chat: y=143, height=1). Nothing readable fits in < 2pt, so that's hidden.
+    static func isVisible(_ frame: CGRect, in window: CGRect) -> Bool {
+        if frame.width == 0 && frame.height == 0 { return true }
+        if frame.width < 2 || frame.height < 2 { return false }
+        return frame.intersects(window)
+    }
+
+    /// Text areas longer than this are read as "what's on screen" instead of the whole value.
+    static let longValueThreshold = 2_000
+
+    /// A code editor's AXValue is the whole file. Ask for just the visible slice instead:
+    /// AXVisibleCharacterRange says which characters are on screen; AXStringForRange returns them.
+    /// Returns nil (so the caller falls back to AXValue) if the app doesn't support it.
+    static func visibleText(of element: AXElement, role: String, clipped: inout Int) -> String? {
+        guard role == "AXTextArea",
+              let total = element.attribute(AX.numberOfCharacters) as? Int, total > longValueThreshold,
+              var range = element.range(AX.visibleCharacterRange), range.length > 0, range.length < total,
+              let parameter = AXValueCreate(.cfRange, &range),
+              let text = element.parameterized(AX.stringForRange, parameter) as? String
+        else { return nil }
+        clipped += 1
+        return text
     }
 
     /// Breadth-first, so we find the main page before any embedded frames.

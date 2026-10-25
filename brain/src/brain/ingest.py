@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Literal
 
+from brain import episodes
 from brain.db import store
 from brain.models import ObservationIn
 from brain.redact import redact
@@ -35,6 +36,7 @@ def ingest(conn: sqlite3.Connection, obs: ObservationIn, source: Literal["file",
             return IngestResult("near_duplicate", previous["id"], 0, redactions)
 
     obs_id = store.insert_observation(conn, clean, source=source)
+    episodes.assign(conn, obs_id)
     return IngestResult("stored", obs_id, redactions=redactions)
 
 

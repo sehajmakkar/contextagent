@@ -14,6 +14,8 @@ class Settings(BaseSettings):
     gemini_api_key: SecretStr | None = None
     gemini_tier: Literal["free", "paid"] = "free"
     llm_model: str = "gemini-3.8-flash"
+    embed_model: str = "gemini-embedding-2"
+    embed_dims: int = 768  # must match migrations/005_vectors.sql
 
     user_name: str = "Sehaj Preet"
     user_email: str = "sehaj.demo@example.com"

@@ -7,7 +7,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from brain.db.store import normalize
+from brain.db.store import grounded
 from brain.llm.client import LLMClient, Usage
 
 log = logging.getLogger(__name__)
@@ -91,7 +91,7 @@ def _keep(candidate: LoopCandidate, source_text: str) -> bool:
         log.info("dropped low-confidence loop (%.2f): %s", candidate.confidence, candidate.title)
         return False
     # Grounding check: the quote must really be in the source, or the loop may be hallucinated.
-    if normalize(candidate.evidence_quote) not in normalize(source_text):
+    if not grounded(candidate.evidence_quote, source_text):
         log.warning("dropped ungrounded loop, quote not in source: %r", candidate.evidence_quote)
         return False
     return True

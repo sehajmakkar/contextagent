@@ -2,6 +2,7 @@
 
 import json
 import logging
+import time
 from collections import Counter
 from pathlib import Path
 
@@ -14,9 +15,12 @@ from rich.table import Table
 from brain.agent.draft import draft_reply
 from brain.config import get_settings
 from brain.db import store
+from brain import episodes, retention
 from brain.ingest import ingest as ingest_observation
 from brain.llm.client import LLMClient, LLMError, Usage
 from brain.loops import pipeline
+from brain.memory import embed as embedding
+from brain.memory import retrieve
 from brain.models import ObservationIn
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
@@ -77,9 +81,15 @@ def ingest(
         _detect_pending(conn)
 
 
-@app.command(name="detect")
+@app.command(name="process")
+def process_cmd() -> None:
+    """Process closed episodes that haven't been processed yet: memories + loops (also retries failures)."""
+    _detect_pending(_db())
+
+
+@app.command(name="detect", hidden=True)
 def detect_cmd() -> None:
-    """Run loop detection on observations that haven't been processed yet (e.g. after a failure)."""
+    """Old name for `process`."""
     _detect_pending(_db())
 
 
@@ -87,30 +97,137 @@ def _detect_pending(conn) -> None:
     s = get_settings()
     llm = _llm()
     usages: list[Usage] = []
-    created = merged = failed = 0
+    created = merged = failed = skipped = memories = 0
     todo = pipeline.pending(conn, s)
 
-    for obs in todo:
-        console.print(f"[dim]{obs['captured_at'][:16]} {_e(obs['app_name'])} · {_e(obs['window_title'][:60])}[/]")
-        outcome = pipeline.process(conn, llm, obs, s)
+    for ep in todo:
+        console.print(f"[dim]{ep['started_at'][:16]} {_e(ep['app_name'])} · {_e(ep['window_title'][:55])} "
+                      f"({ep['observation_count']} snapshot(s), {len(ep['text']):,} chars)[/]")
+        outcome = pipeline.process(conn, llm, ep, s)
+        if outcome.quota_exhausted:
+            console.print(f"[red]{_e(outcome.error)}.[/] Stopping; the rest stay pending for `brain process`.")
+            break
         if outcome.error:
             failed += 1
-            console.print(f"  [red]detection failed:[/] {_e(outcome.error)}")
+            console.print(f"  [red]failed:[/] {_e(outcome.error)}")
             continue
-        usages.append(outcome.usage)
+        if outcome.skipped:
+            skipped += 1
+            console.print(f"  [dim]skipped: {outcome.skipped}[/]")
+            continue
+        usages.extend(outcome.usages)
+        for text in outcome.memories:
+            console.print(f"  [magenta]•[/] {_e(text)}")
         for loop_id in outcome.merged:
             console.print(f"  [blue]↺[/] seen again → loop #{loop_id}")
         for loop_id, title, confidence in outcome.created:
             console.print(f"  [green]+[/] loop #{loop_id}: {_e(title)} [dim]({confidence:.2f})[/]")
         created += len(outcome.created)
         merged += len(outcome.merged)
+        memories += len(outcome.memories)
 
-    console.print(f"\nProcessed {len(todo) - failed}/{len(todo)} · "
-                  f"{created} loop(s) created, {merged} merged into existing"
-                  + (f" · [red]{failed} failed, run `brain detect` to retry[/]" if failed else ""))
+    console.print(f"\nEpisodes {len(todo) - failed}/{len(todo)} processed ({skipped} skipped by the local gate) · "
+                  f"{memories} memories · {created} loop(s) created, {merged} merged"
+                  + (f" · [red]{failed} failed, run `brain process` to retry[/]" if failed else ""))
     if held := pipeline.held_back(conn, s):
-        console.print(f"[yellow]{held} live capture(s) held back:[/] free tier, and ALLOW_FREE_TIER_LIVE is off (ADR-027)")
+        console.print(f"[yellow]{held} live-capture episode(s) held back:[/] free tier, ALLOW_FREE_TIER_LIVE is off (ADR-027)")
     _print_usage(usages)
+    if memories:
+        _embed(conn, llm)
+
+
+def _embed(conn, llm) -> None:
+    try:
+        out = embedding.embed_memories(conn, llm, get_settings())
+    except LLMError as e:
+        console.print(f"[red]Embedding stopped:[/] {_e(e)}. Run `brain embed` later.")
+        return
+    console.print(f"[dim]Embedded {out.embedded} memor{'y' if out.embedded == 1 else 'ies'} "
+                  f"({out.api_calls} API call(s)), {out.duplicates} near-duplicate(s) folded into earlier ones[/]")
+
+
+@app.command(name="embed")
+def embed_cmd() -> None:
+    """Embed memories that have no vector yet (backfill, or after a failure)."""
+    _embed(_db(), _llm())
+
+
+@app.command()
+def search(query: str, k: int = typer.Option(5, "-k"),
+           mode: str = typer.Option("hybrid", help="bm25, vector, hybrid or hybrid_recency")) -> None:
+    """Search memories. bm25 works offline; the others embed the query."""
+    conn = _db()
+    llm = None if mode == "bm25" else _llm()
+    started = time.perf_counter()
+    hits = retrieve.search(conn, llm, get_settings(), query, k=k, mode=mode)
+    ms = (time.perf_counter() - started) * 1000
+    if not hits:
+        console.print("No matching memories.")
+    for rank, h in enumerate(hits, start=1):
+        console.print(f"[bold]{rank}.[/] [cyan]{h.kind}[/] {_e(h.text)}")
+        console.print(f"    [dim]#{h.memory_id} · {h.happened_at[:16]} · {_e(h.app_name)} · {_e(h.window_title[:50])} · score {h.score:.4f}[/]")
+    console.print(f"[dim]{mode} · {ms:.0f} ms[/]")
+
+
+@app.command()
+def memories(query: str = typer.Argument("", help="Optional keyword filter (FTS5)."),
+             limit: int = typer.Option(30)) -> None:
+    """List extracted memories, newest first, with where each came from."""
+    conn = _db()
+    if query:
+        rows = conn.execute(
+            """SELECT m.*, e.app_name, e.window_title FROM memories_fts f JOIN memories m ON m.id = f.rowid
+               JOIN episodes e ON e.id = m.episode_id WHERE memories_fts MATCH ? ORDER BY rank LIMIT ?""",
+            (query, limit)).fetchall()
+    else:
+        rows = conn.execute(
+            """SELECT m.*, e.app_name, e.window_title FROM memories m JOIN episodes e ON e.id = m.episode_id
+               ORDER BY m.happened_at DESC, m.id DESC LIMIT ?""", (limit,)).fetchall()
+    if not rows:
+        console.print("No memories yet. Run [bold]brain process[/].")
+        return
+    for r in rows:
+        console.print(f"[bold]#{r['id']}[/] [cyan]{r['kind']}[/] {_e(r['text'])}")
+        console.print(f"    [dim]{r['happened_at'][:16]} · {_e(r['app_name'])} · {_e(r['window_title'][:50])}[/]")
+
+
+@app.command()
+def funnel(source: str = typer.Option("all", help="all, capture (your live screen) or file (fixtures).")) -> None:
+    """How much text survives each stage, from raw snapshots to memories (the shrink-first funnel)."""
+    conn = _db()
+    with conn:
+        if backfilled := episodes.backfill(conn):
+            console.print(f"[dim]Grouped {backfilled} older snapshot(s) into episodes (local only).[/]")
+    where = "" if source == "all" else f" WHERE source = '{'capture' if source == 'capture' else 'file'}'"
+    obs = conn.execute(f"SELECT COUNT(*), COALESCE(SUM(raw_chars), 0) FROM episodes{where}").fetchone()
+    eps = conn.execute(f"""SELECT COUNT(*), COALESCE(SUM(LENGTH(text)), 0),
+                                 COALESCE(SUM(skipped_reason IS NOT NULL), 0),
+                                 COALESCE(SUM(llm_calls), 0), COALESCE(SUM(prompt_tokens), 0),
+                                 COALESCE(SUM(output_tokens), 0), COALESCE(SUM(thinking_tokens), 0),
+                                 COALESCE(SUM(observation_count), 0)
+                          FROM episodes{where}""").fetchone()
+    mem = conn.execute(f"""SELECT COUNT(*), COALESCE(SUM(LENGTH(m.text)), 0) FROM memories m
+                           JOIN episodes e ON e.id = m.episode_id{where.replace('source', 'e.source')}""").fetchone()
+    table = Table(title="Shrink-first funnel")
+    for col in ("Stage", "Items", "Chars", "vs raw"):
+        table.add_column(col, justify="right" if col != "Stage" else "left")
+    raw = obs[1] or 1
+    table.add_row("Snapshots stored", f"{eps[7]:,}", f"{obs[1]:,}", "100%")
+    table.add_row("Episodes (lines merged)", f"{eps[0]:,}", f"{eps[1]:,}", f"{eps[1] / raw:.0%}")
+    table.add_row("  sent to the LLM", f"{eps[0] - eps[2]:,}", "", "")
+    table.add_row("Memories kept", f"{mem[0]:,}", f"{mem[1]:,}", f"{mem[1] / raw:.1%}")
+    console.print(table)
+    console.print(f"[dim]{eps[3]} LLM call(s) · prompt {eps[4]:,} tok · output {eps[5]:,} tok · thinking {eps[6]:,} tok · "
+                  f"{eps[2]} episode(s) skipped by the local gate[/]")
+
+
+@app.command()
+def purge(days: int = typer.Option(7, help="Erase raw snapshot text older than this, once processed.")) -> None:
+    """Retention: erase old raw snapshot text. Memories and loop evidence are kept."""
+    conn = _db()
+    with conn:
+        erased = retention.purge(conn, older_than_days=days)
+    console.print(f"Erased the raw text of {erased} processed snapshot(s) older than {days} day(s).")
 
 
 @app.command()

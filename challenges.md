@@ -18,7 +18,12 @@ Status: ✅ solved · 🟡 partly solved / stopgap · 🔵 proposed (not built y
 | 10 | Failed LLM calls silently lost work | 1 | ✅ |
 | 11 | Closing loops in many apps, not just Gmail | 5 (design) | 🔵 |
 | 12 | Detection missed meeting action items | 1 | 🔵 your prompt exercise |
-| 13 | Polling misses short-lived screens, and faster polling just makes duplicates | 2 → 3 | 🔵 proposed |
+| 13 | Polling misses short-lived screens, and faster polling just makes duplicates | 2 → 3 | ✅ event-driven |
+| 14 | Chat history off-screen still came through (Chromium clamps hidden elements) | 3 | ✅ |
+| 15 | Two macOS timing races in event-driven capture | 3 | ✅ |
+| 16 | Free tier: 20 requests/day, and retries that made it worse | 3 | ✅ fail-fast + Flash-Lite |
+| 17 | Duplicate detection merged two different facts (Q2 vs Q3) | 3 | ✅ |
+| 18 | An eval that said 100%: ceiling effects and RRF's blind spot | 3 | ✅ measured, documented |
 
 ---
 
@@ -114,7 +119,7 @@ Status: ✅ solved · 🟡 partly solved / stopgap · 🔵 proposed (not built y
 **Situation.** "Sehaj: write the launch blog post draft by Oct 28" in meeting notes wasn't detected. Our prompt rule "tasks with no other person aren't loops" made it look like a to-do for yourself.
 **Next.** Your prompt-iteration exercise: fix it without adding false positives, measured against the answer key.
 
-## 13. Polling misses short-lived screens 🔵
+## 13. Polling misses short-lived screens ✅ (built in Phase 3)
 
 **Situation.** The app reads the focused window every 5s. Anything shorter-lived (a toast, a 3-second glance) can be missed. Worse, the debounce only sends text that's unchanged on two reads in a row, so an email read for about 7s and then left is **never sent**: the first read is still settling when the app switch moves us on. (You found this by asking.)
 **Why "poll faster" is wrong.** 1s polling means 5× more reads, nearly all identical. They're cheap (about 55 ms) and the line-novelty filter discards them, but that's wasted CPU and battery, and it still misses anything under 1s. Polling guesses *when* to look.
@@ -126,4 +131,45 @@ Status: ✅ solved · 🟡 partly solved / stopgap · 🔵 proposed (not built y
 **Key insight.** Storage and LLM cost scale with **new lines**, not with how often we read (challenges #1 and #3). So reading at the right moments costs almost nothing. Time on screen also matters less than it seems: commitments persist (the thread is still there), and the Phase 5 Gmail connector can fetch the full source.
 **Tradeoff.** Notification quality varies by app (native good, Electron mixed, canvas poor), so it has to be measured per app.
 **Pitch line.** "I replaced guessing when to look with listening for changes, and decoupled read frequency from cost."
+**Built (ADR-032).** Measured: a 2-second glance at a TextEdit file was captured `settled` about 1s after opening. Switching away triggered a `leaving` read that correctly found nothing new.
+
+## 14. Off-screen chat history still came through ✅
+
+**Situation.** Cursor gave 20,000 chars (the cap). I assumed one huge file value, but a role histogram showed **338 `AXDocumentArticle` elements**: the chat panel's whole scroll history, kept in the DOM.
+**First try.** Skip elements whose frame doesn't intersect the window. It worked in Notes (3,885 → 1,183 chars) but did **nothing** in Cursor.
+**Why.** A probe printed the frames. Chromium **clamps** scrolled-away elements to the edge of the scroll area as a **1pt sliver** (`y=143, height=1`), which technically intersects the window.
+**What worked.** Also treat any frame thinner than 2pt on one side as hidden (nothing readable fits in 1pt), while 0×0 still means "unknown". Cursor: 400 subtrees skipped, no longer capped.
+**Pitch line.** "I measured the frames instead of trusting the docs, and found Chromium reports hidden elements as 1-point slivers."
+
+## 15. Two macOS timing races ✅
+
+**Situation.** The scripted test ("open file A, glance at file C for 2s, switch to Finder") missed file A.
+**How we found it.** We added `os.Logger` tracing (IDs and counts only, never text) and read it with `/usr/bin/log`. zsh's `log` builtin shadows Apple's tool, which was a gotcha of its own.
+**Race 1.** macOS sends the old app's *deactivated* **after** the new app's *activated*. Our leave handler cancelled "the" scheduled read, which by then belonged to the new app.
+**Race 2.** A just-launched app rejects notification registration (`observing=0`), and its first read finds no window yet.
+**What worked.** Don't cancel on deactivate (the settled read always targets the frontmost app). Retry registration on each read. Retry a no-window read up to 3 times. Result: A captured 1s after launch, C 1s after opening.
+**Pitch line.** "Tracing showed macOS delivers activation events out of the order you'd assume. The fix was to make each handler independent of that order."
+
+## 16. Free tier: 20 requests a day, and retries that made it worse ✅
+
+**Situation.** The first full fixture run died at episode 7: `generate_content_free_tier_requests, limit: 20, model: gemini-3.8-flash`, "retry in 9h56m". The SDK had retried each daily-quota 429 five times with backoff, wasting about 40s per episode and using up each episode's 3 attempts.
+**What worked.** Parse Google's 429 body ourselves. `QuotaFailure.quotaId …PerDay…` → stop the batch at once and don't charge the episode. A per-minute limit → wait the server's `RetryInfo` delay plus jitter.
+**Resolved (your call).** Flash-Lite for testing and evals (ADR-039), which has its own quota. It ran the whole fixture pipeline (66 calls) without hitting a limit.
+**Pitch line.** "Retry policy should depend on *why* you're limited: per-minute means wait, per-day means stop."
+
+## 17. Duplicate detection merged two different facts ✅
+
+**Situation.** Revisiting a thread re-extracts the same memory ("Sehaj will send Priya the Q3 numbers…"), so we fold near-identical vectors into one.
+**Calibration first.** Instead of guessing a threshold, we measured pair distances. A true restatement was 0.062, while two *different* lease facts were 0.094, and the median pair was 0.315. My placeholder of 0.10 would have merged the lease facts and lost a deadline. So: 0.075 plus the same kind.
+**It still failed in the eval.** *"Q2 blended M1 retention 58.9%, up from 55.4%"* was folded into *"Q3 … 63.6%, up from 58.9%"*: same kind, nearly the same sentence. **Embeddings blur exact tokens** (Q2/Q3, 58.9/63.6), the weakness we wrote about in the very first primer.
+**What worked.** A duplicate must also agree on its numbers: one memory's number set is contained in the other's. A restatement may add a resolved date ({3} ⊂ {3, 21, 2026}), but different figures never pass. Duplicates are *marked*, never deleted, so mistakes can be undone. The Q2 query became answerable.
+**Pitch line.** "I calibrated the dedupe threshold on real distances, then caught a false merge in the eval. Vectors blur numbers, so I added an exact-token check."
+
+## 18. An eval that said 100% ✅
+
+**Situation.** The first retrieval eval gave every mode **100% Recall@5**.
+**Why that's a red flag.** With 48 memories, the top 5 is about 10% of everything: a **ceiling effect**. A metric that can't fail tells you nothing.
+**What we did.** Added Recall@1 and MRR, separated **extraction misses** (no memory existed) from retrieval misses, and looked at per-query ranks. Recall@1: vector 90% = hybrid 90% > BM25 84% > hybrid+recency 81%. Per-query ranks showed the textbook pattern: BM25 wins exact tokens (`PR #519`), vectors win paraphrases ("current price of Pro"), and RRF demotes results only one retriever finds ("cohort chart": vector 3 → hybrid 6).
+**Honesty.** The differences are 1–3 queries out of 31, so we chose hybrid for robustness (exact IDs, offline BM25) and didn't tune weights on a set that small.
+**Pitch line.** "When my eval said 100%, I made it harder rather than trusting it, and I can tell you which queries each retriever wins and why."
 

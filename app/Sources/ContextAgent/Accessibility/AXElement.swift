@@ -13,6 +13,11 @@ enum AX {
     static let url = "AXURL"
     /// Chromium and Electron only build their accessibility tree when an assistive app asks for it.
     static let manualAccessibility = "AXManualAccessibility"
+    static let numberOfCharacters = "AXNumberOfCharacters"
+    static let position = "AXPosition"
+    static let size = "AXSize"
+    static let visibleCharacterRange = "AXVisibleCharacterRange"
+    static let stringForRange = "AXStringForRange"
 
     static let webArea = "AXWebArea"
     static let secureTextField = "AXSecureTextField"
@@ -52,6 +57,38 @@ struct AXElement {
             result[name] = value
         }
         return result
+    }
+
+    /// This element's on-screen rectangle (global coordinates), from AXPosition + AXSize.
+    var frame: CGRect? {
+        let a = attributes([AX.position, AX.size])
+        return Self.frame(position: a[AX.position], size: a[AX.size])
+    }
+
+    static func frame(position: CFTypeRef?, size: CFTypeRef?) -> CGRect? {
+        guard let position, let size, CFGetTypeID(position) == AXValueGetTypeID(),
+              CFGetTypeID(size) == AXValueGetTypeID() else { return nil }
+        var origin = CGPoint.zero
+        var extent = CGSize.zero
+        guard AXValueGetValue(position as! AXValue, .cgPoint, &origin),
+              AXValueGetValue(size as! AXValue, .cgSize, &extent) else { return nil }
+        return CGRect(origin: origin, size: extent)
+    }
+
+    /// A CFRange-valued attribute, e.g. AXVisibleCharacterRange (which characters are on screen).
+    func range(_ name: String) -> CFRange? {
+        guard let value = attribute(name), CFGetTypeID(value) == AXValueGetTypeID() else { return nil }
+        var range = CFRange()
+        return AXValueGetValue(value as! AXValue, .cfRange, &range) ? range : nil
+    }
+
+    /// A parameterized attribute: a query with an argument, e.g. AXStringForRange(range) → the text in it.
+    func parameterized(_ name: String, _ parameter: CFTypeRef) -> CFTypeRef? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyParameterizedAttributeValue(ref, name as CFString, parameter, &value) == .success else {
+            return nil
+        }
+        return value
     }
 
     @discardableResult

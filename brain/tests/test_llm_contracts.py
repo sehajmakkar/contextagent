@@ -56,3 +56,19 @@ def test_live_detects_the_demo_loop(conn, demo_observations):
                             store.get_observation(conn, obs_id), name=s.user_name, email=s.user_email)
     assert len(loops) == 1
     assert loops[0].direction == "i_owe" and loops[0].due_date == date(2026, 10, 21)
+
+
+def test_spliced_quotes_are_grounded_only_if_every_piece_is_real():
+    from brain.db.store import grounded
+    source = "Maya Chen <maya@acme-talent.example>\nI came across your work and would love a quick 30-minute intro call."
+    assert grounded("Maya Chen <maya@acme-talent.example> ... would love a quick 30-minute intro call", source)
+    assert not grounded("Maya Chen ... would love a two-hour onsite", source)
+
+
+def test_different_figures_are_never_folded_as_duplicates():
+    from brain.memory.embed import numbers
+    q3, q2 = "The Q3 blended M1 retention is 63.6%, up from 58.9% in Q2.", "The Q2 blended M1 retention is 58.9%, up from 55.4% in Q1."
+    a, b = numbers(q3), numbers(q2)
+    assert not (a <= b or b <= a)
+    restated = numbers("Sehaj will send the Q3 retention numbers by Wednesday, October 21, 2026.")
+    assert numbers("Sehaj will send the Q3 retention numbers by Wednesday.") <= restated

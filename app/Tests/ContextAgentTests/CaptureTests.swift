@@ -9,6 +9,28 @@ private func snapshot(_ text: String, title: String = "Inbox - Gmail", bundle: S
 
 private let email = "Priya Sharma\nCan you send me the Q3 retention numbers before Thursday?"
 
+@Test func settledAndLeavingReadsSendAtOnce() {
+    var policy = CapturePolicy()
+    // The quiet period (or leaving the app) already proves the text is stable: no second read needed.
+    #expect(policy.decide(snapshot(email), trigger: .settled) == .send)
+    #expect(policy.decide(snapshot(email), trigger: .leaving) == .skip(.unchanged))
+    #expect(policy.decide(snapshot(email + "\nSure, will do"), trigger: .leaving) == .send)
+}
+
+@Test func coalescerWaitsForQuietButNotForever() {
+    var c = EventCoalescer(quiet: 1.5, maxWait: 5)
+    let t0 = Date(timeIntervalSince1970: 0)
+    #expect(c.fireAt == nil)
+    c.record(t0)
+    #expect(c.fireAt == t0.addingTimeInterval(1.5))  // a single event: read after 1.5s of quiet
+    c.record(t0.addingTimeInterval(1))
+    #expect(c.fireAt == t0.addingTimeInterval(2.5))  // another event pushes it back…
+    for s in stride(from: 2.0, through: 10.0, by: 1.0) { c.record(t0.addingTimeInterval(s)) }
+    #expect(c.fireAt == t0.addingTimeInterval(5))    // …but a non-stop stream still reads by 5s
+    c.reset()
+    #expect(c.fireAt == nil)
+}
+
 @Test func sendsOnlyAfterTheScreenIsStable() {
     var policy = CapturePolicy()
     #expect(policy.decide(snapshot(email)) == .skip(.settling))  // first sight: wait
@@ -77,6 +99,14 @@ private let email = "Priya Sharma\nCan you send me the Q3 retention numbers befo
     collector.add("abc")
     collector.add(String(repeating: "x", count: 50_000))  // a whole source file in one AXValue
     #expect(collector.text == "abc\nxxxxxx" && collector.isFull)
+}
+
+@Test func offscreenFramesAreCulledButUnknownFramesAreNot() {
+    let window = CGRect(x: 0, y: 0, width: 1000, height: 800)
+    #expect(WindowTextReader.isVisible(CGRect(x: 10, y: 700, width: 500, height: 200), in: window))   // partly visible
+    #expect(!WindowTextReader.isVisible(CGRect(x: 10, y: -3000, width: 500, height: 40), in: window)) // scrolled away
+    #expect(WindowTextReader.isVisible(.zero, in: window))  // 0×0 container: unknown, keep walking
+    #expect(!WindowTextReader.isVisible(CGRect(x: 21, y: 143, width: 587, height: 1), in: window)) // Chromium clamp
 }
 
 @Test func urlQueryStringsAreDropped() {

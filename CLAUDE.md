@@ -102,6 +102,11 @@ make run-app                  # build, sign, and launch the menu-bar app (needs 
 make dump BUNDLE=com.google.Chrome   # read one app's window once: text, node count, timing, role histogram
 make test                     # brain (pytest) + app (swift test)
 uv run brain captures [--full]       # (in brain/) exactly what was read from your screen
+uv run brain funnel [--source capture]   # how much text survives each stage (local, no API calls)
+uv run brain memories [query] | search "query" [--mode bm25|vector|hybrid]
+uv run brain process | embed | purge     # process closed episodes / backfill vectors / retention
+LLM_MODEL=gemini-3.5-flash-lite uv run python -m evals.run_retrieval [--rebuild]   # retrieval eval (ADR-039)
+make events BUNDLE=com.apple.TextEdit SECONDS=10   # which AX notifications an app actually sends
 cp .env.example .env                                  # add GEMINI_API_KEY (repo root)
 cd brain && uv sync
 
@@ -119,7 +124,7 @@ DATA_DIR=/tmp/ctx uv run brain …                      # use a throwaway DB
 
 ## Where things are tracked
 
-- `plan.md`: phases, tasks, current status. **Current phase: Phase 2 verified on real apps (2026-10-25). Waiting for the user's approval before Phase 3.**
+- `plan.md`: phases, tasks, current status. **Current phase: Phase 3 done (2026-10-25). Waiting for the user's approval before Phase 4.**
 - `decisions.md`: ADRs, meaning every decision with its options and tradeoffs.
 - `learnings.md`: concept notes and interview prep, appended after each task.
 - `challenges.md`: hard problems, what we tried, what worked, with numbers and a pitch line. Material for interviews and cold DMs.

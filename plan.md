@@ -90,20 +90,34 @@ Backup scenarios (Phase 7): "reply to the recruiter with my availability" (needs
 
 ---
 
-## Phase 3: Memory and retrieval (3–4 days)
+## Phase 3: Event-driven capture, shrink-first memory, and retrieval (5–7 days)
 
-**Goal:** the agent can find "the Q3 retention numbers I looked at on Monday".
+**Goal:** the agent can find "the Q3 retention numbers I looked at on Monday", and only a small, distilled slice of what's on screen ever reaches Gemini or long-term storage. (Revised 2026-10-25 after challenges #1 and #13.)
 
-- [ ] Group raw observations into **episodes** (same app and topic within a time window). The LLM writes a short memory for each episode with **provenance** (which observations, app, time).
-- [ ] FTS5 index (BM25 keyword search) over memories.
-- [ ] Embeddings through `gemini-embedding-2` at 768 dimensions: one text per call, with document and query prefixes, cached by content hash. Store them in `sqlite-vec` with `embed_model` and `embed_dims` on each row.
-- [ ] `retrieve(query, k)` with three modes: BM25, vector, and **hybrid with Reciprocal Rank Fusion**, plus recency weighting. BM25 must keep working when the network is down.
-- [ ] `evals/datasets/retrieval.jsonl`: about 30 questions, each labeled with the memory IDs that answer it.
-- [ ] `evals/run_retrieval.py`, which reports **Recall@5, MRR, and p50/p95 latency** for each mode (optional extra: 768 vs 1536 dimensions). Record the results in `learnings.md`.
+**Part A: capture at the right moments (Swift)**
+- [x] Visible text only: **visibility culling** (frame outside the window, or a Chromium-clamped 1pt sliver) plus `AXVisibleCharacterRange` for long native text areas. Notes 3,885 → 1,183 chars, Cursor no longer capped (ADR-036).
+- [x] **AXObserver** + `EventCoalescer` (1.5s quiet, 5s max wait). `make events` measures which notifications an app actually sends (ADR-032).
+- [x] **Flush on leave.** Verified: a 2s glance was captured. Fixed two macOS timing races found with `os.Logger` tracing.
+- [x] Backup poll every 30s. Captures carry their trigger (migration 003). 15 Swift tests.
 
-**Concepts:** embeddings, cosine similarity, dimensionality and Matryoshka truncation, chunking and episodes, BM25, vector search, hybrid search, RRF, recency decay, retrieval metrics, embedding versioning, context engineering.
-**Decisions:** ADR-007, 009, 015, 020 ✅.
-**Done when:** you have a table of BM25, vector, and hybrid results on your own eval set, and you can explain why the winner won.
+**Part B: shrink first, then extract (brain)**
+- [x] **Episodes** ([episodes.py](brain/src/brain/episodes.py), migration 004, ADR-033).
+- [x] Local gate (< 80 chars → no LLM call).
+- [x] **Memory extraction per episode** ([memory/extract.py](brain/src/brain/memory/extract.py), ADR-034), grounded, with provenance and FTS5 via triggers. Loop detection moved to episodes. First live memories look specific and standalone.
+- [x] **Retention** (`brain purge`, [retention.py](brain/src/brain/retention.py), ADR-035).
+- [x] Funnel measured (`brain funnel`). **Your real captures (local only):** 117 snapshots → 40 episodes, 451k → 203k chars (−55%, 2.9× fewer LLM calls). Fixtures: 15 episodes → 21 memories, 30 Flash-Lite calls. Flash-Lite for testing (ADR-039).
+
+**Part C: memory retrieval**
+- [x] FTS5 index (BM25) over memories, synced by triggers.
+- [x] Embeddings ([memory/embed.py](brain/src/brain/memory/embed.py), migration 005): `gemini-embedding-2` @ 768 (verified: norm 1.0), prefixes, content-hash cache, `sqlite-vec` cosine index. Near-duplicates folded (calibrated, challenge #17).
+- [x] [memory/retrieve.py](brain/src/brain/memory/retrieve.py): BM25, vector, hybrid RRF (k=60), hybrid+recency. `brain search`.
+- [x] [memory_week.jsonl](fixtures/sessions/memory_week.jsonl) (18 observations with distractors) + [retrieval.jsonl](brain/evals/datasets/retrieval.jsonl) (32 queries labelled by source observation).
+- [x] [evals/run_retrieval.py](brain/evals/run_retrieval.py) → [results/retrieval.md](brain/evals/results/retrieval.md). **Hybrid R@1 90%, vector 90%, BM25 84%, +recency 81%.** Default: hybrid (ADR-038).
+
+**Concepts:** AXObserver and run-loop sources, debounce vs max-wait, event-driven vs polling, episodes and sessionization, delta merging, cost funnels, structured extraction with provenance, data retention, embeddings, cosine similarity, Matryoshka truncation, BM25, hybrid search, RRF, recency decay, retrieval metrics, embedding versioning.
+**Decisions:** ADR-007, 009, 015, 020, plus new ones for event-driven capture, episodes, and retention.
+**Done when:** ✅ (1) a short glance is captured (2s TextEdit test), ✅ (2) the funnel shows the reduction (−55% chars, 2.9× fewer calls on real captures), ✅ (3) the BM25 / vector / hybrid table exists, with per-query reasons (ADR-038).
+**Follow-ups:** grow the eval set (differences are 1–3 queries); one combined memories+loops call per episode; tune the extraction prompt against low-value memories (pytest failures, SaaS renewals).
 
 ---
 
@@ -147,6 +161,7 @@ Backup scenarios (Phase 7): "reply to the recruiter with my availability" (needs
 **Goal:** the demo looks and feels like a real product.
 
 - [ ] SwiftUI `MenuBarExtra` popover showing open loops grouped by due date, each with an evidence snippet and its source app or time.
+- [ ] Reference (your Minimi screenshots, see `docs/minimi-teardown.md`): a dashboard with **Inbox** (open/closed counts, greeting, empty state) next to **Recent memories** (app icon + one line each), plus a compact pinned panel. Ours adds **Close it for me** next to their **Resolve**.
 - [ ] **Close it for me** streams agent progress live ("Finding thread… Reading memory… Drafting…") over SSE from the brain.
 - [ ] Draft review: editable body, recipients shown, **Approve & Send**, **Dismiss**, **Not a loop** (that last one feeds back into the eval set).
 - [ ] Closed view: each loop with a link to proof (the sent email).

@@ -30,14 +30,23 @@ struct CapturePolicy {
         !Self.alwaysExcluded.contains(bundleID) && !userExcluded.contains(bundleID)
     }
 
-    /// Send only text that is new *and* stable: identical on two reads in a row.
-    /// That debounce skips half-typed sentences and pages that are still loading.
-    mutating func decide(_ snapshot: WindowSnapshot) -> Decision {
+    /// Why we're reading. It decides how sure we need to be that the screen is stable.
+    enum Trigger: String {
+        /// After change notifications went quiet: the quiet period already proves stability.
+        case settled
+        /// You're switching away: last chance to capture this window, so send whatever changed.
+        case leaving
+        /// Backup timer for apps with poor notifications: require the same text on two reads in a row.
+        case poll
+    }
+
+    /// Send only text that is new *and* stable. That skips half-typed sentences and pages still loading.
+    mutating func decide(_ snapshot: WindowSnapshot, trigger: Trigger = .poll) -> Decision {
         guard snapshot.text.count >= minChars else { return .skip(.tooShort) }
         let key = Self.windowKey(snapshot)
         let print = Self.fingerprint(snapshot.text)
         if lastSent[key] == print { return .skip(.unchanged) }
-        if pending[key] != print {
+        if trigger == .poll, pending[key] != print {
             pending[key] = print
             return .skip(.settling)
         }

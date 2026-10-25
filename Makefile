@@ -4,7 +4,7 @@ BUNDLE_ID := com.sehajpreet.contextagent
 IDENTITY  ?= $(shell security find-identity -v -p codesigning | awk -F'"' '/Apple Development/ {print $$2; exit}')
 SIGN_AS   := $(if $(IDENTITY),$(IDENTITY),-)
 
-.PHONY: app run-app brain test dump reset-permission
+.PHONY: app run-app brain test dump events reset-permission
 
 app: ## Build the menu-bar app and wrap it in a signed .app bundle
 	cd app && swift build -c release
@@ -29,6 +29,11 @@ dump: ## Read one app's window once and print it: make dump BUNDLE=com.google.Ch
 	@test -n "$(BUNDLE)" || (echo "usage: make dump BUNDLE=com.google.Chrome" && exit 1)
 	open -n -W $(APP) --args --dump $(BUNDLE) --out $(CURDIR)/build/dump.json
 	@cat build/dump.json; echo
+
+events: ## Count an app's accessibility notifications: make events BUNDLE=com.google.Chrome SECONDS=10
+	@test -n "$(BUNDLE)" || (echo "usage: make events BUNDLE=com.google.Chrome [SECONDS=10]" && exit 1)
+	open -n -W $(APP) --args --events $(BUNDLE) $(or $(SECONDS),10) --out $(CURDIR)/build/events.json
+	@cat build/events.json; echo
 
 reset-permission: ## Forget the Accessibility grant (needed after an ad-hoc re-sign)
 	tccutil reset Accessibility $(BUNDLE_ID)

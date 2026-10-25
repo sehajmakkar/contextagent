@@ -12,6 +12,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import sqlite_vec
+
 from brain.models import ObservationIn
 
 _MIGRATIONS = sorted(Path(__file__).with_name("migrations").glob("[0-9][0-9][0-9]_*.sql"))
@@ -29,6 +31,10 @@ def connect(path: Path | str) -> sqlite3.Connection:
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     conn = sqlite3.connect(path)
+    # sqlite-vec is a compiled extension; allow loading only for the moment we load it.
+    conn.enable_load_extension(True)
+    sqlite_vec.load(conn)
+    conn.enable_load_extension(False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
@@ -55,16 +61,23 @@ def normalize(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip().lower()
 
 
+def grounded(quote: str, source: str) -> bool:
+    """Is the model's quote really in the source? A quote spliced with "..." passes only if every piece is."""
+    pieces = [p for p in re.split(r"\.\.\.|…", normalize(quote)) if p.strip(" .,;:")]
+    text = normalize(source)
+    return bool(pieces) and all(p.strip(" .,;:") in text for p in pieces)
+
+
 # --- observations ---------------------------------------------------------
 
 def insert_observation(conn: sqlite3.Connection, obs: ObservationIn, source: str = "file") -> int | None:
     """Store an (already redacted) observation. Returns its id, or None if identical content exists."""
     cur = conn.execute(
         """INSERT OR IGNORE INTO observations
-           (captured_at, app_name, bundle_id, window_title, url, text, content_hash, source)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+           (captured_at, app_name, bundle_id, window_title, url, text, content_hash, source, capture_trigger)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (obs.captured_at.isoformat(), obs.app_name, obs.bundle_id, obs.window_title,
-         obs.url, obs.text, content_hash(obs), source),
+         obs.url, obs.text, content_hash(obs), source, obs.trigger),
     )
     return cur.lastrowid if cur.rowcount else None
 
@@ -109,11 +122,13 @@ def counts(conn: sqlite3.Connection) -> dict[str, int]:
         f"""SELECT
               (SELECT COUNT(*) FROM observations) AS observations,
               (SELECT COUNT(*) FROM observations WHERE source = 'capture') AS captured,
-              (SELECT COUNT(*) FROM observations WHERE processed_at IS NULL
-                                                 AND detect_attempts < {MAX_DETECT_ATTEMPTS}) AS pending,
-              (SELECT COUNT(*) FROM observations WHERE processed_at IS NULL
-                                                 AND detect_attempts >= {MAX_DETECT_ATTEMPTS}) AS failed,
-              (SELECT COUNT(*) FROM loops WHERE state = 'open') AS open_loops"""
+              (SELECT COUNT(*) FROM episodes WHERE processed_at IS NULL
+                                             AND process_attempts < {MAX_DETECT_ATTEMPTS}) AS pending,
+              (SELECT COUNT(*) FROM episodes WHERE processed_at IS NULL
+                                             AND process_attempts >= {MAX_DETECT_ATTEMPTS}) AS failed,
+              (SELECT COUNT(*) FROM loops WHERE state = 'open') AS open_loops,
+              (SELECT COUNT(*) FROM episodes) AS episodes,
+              (SELECT COUNT(*) FROM memories) AS memories"""
     ).fetchone()
     return dict(row)
 
@@ -179,6 +194,17 @@ def get_evidence(conn: sqlite3.Connection, loop_id: int) -> list[sqlite3.Row]:
            WHERE e.loop_id = ? ORDER BY o.captured_at""",
         (loop_id,),
     ).fetchall()
+
+
+# --- memories --------------------------------------------------------------
+
+def insert_memory(conn: sqlite3.Connection, *, episode_id: int, observation_id: int | None, kind: str,
+                  text: str, quote: str, entities: str, happened_at: str) -> int:
+    return conn.execute(
+        """INSERT INTO memories (episode_id, observation_id, kind, text, quote, entities, happened_at, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (episode_id, observation_id, kind, text, quote, entities, happened_at, now()),
+    ).lastrowid
 
 
 # --- audit log ------------------------------------------------------------

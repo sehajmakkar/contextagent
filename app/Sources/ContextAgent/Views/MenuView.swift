@@ -57,7 +57,7 @@ struct MenuView: View {
             if let event = model.lastEvent {
                 // Plain Text(verbatim:) so captured titles are never parsed as Markdown.
                 Text(verbatim: "\(event.app) · \(event.title)").lineLimit(2)
-                Text(verbatim: "\(event.chars) chars · \(event.elapsedMs) ms · \(event.outcome)")
+                Text(verbatim: "\(event.trigger) · \(event.chars) chars · \(event.elapsedMs) ms · \(event.outcome)")
                     .foregroundStyle(.secondary)
                 Text(event.at, style: .relative).foregroundStyle(.secondary)
             } else {

@@ -12,6 +12,7 @@ dependencies = [
     "pydantic>=2.14.1",
     "pydantic-settings>=2.16.1",
     "rich>=15.0.0",
+    "sqlite-vec>=0.1.9",
     "typer>=0.27.3",
     "uvicorn>=0.54.0",
 ]
@@ -32,4 +33,5 @@ dev = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-markers = ["live: calls the real Gemini API (needs GEMINI_API_KEY)"]
+markers = ["live: calls the real Gemini API (needs GEMINI_API_KEY); run with `pytest -m live`"]
+addopts = "-m 'not live'"

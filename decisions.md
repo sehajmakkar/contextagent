@@ -54,6 +54,14 @@ Interview angle: the one-sentence answer to "why?"
 | 029 | Local API auth: 0600 token file + Host-header allowlist + 127.0.0.1 bind | **Accepted** |
 | 030 | Capture triggers and dedupe: app switch + 5s poll, two-read debounce, masked line novelty | **Accepted** |
 | 031 | How we read the AX tree: web area first, AXManualAccessibility, skip secure fields, batched reads, caps | **Accepted** |
+| 032 | Event-driven capture: AXObserver + coalescer, flush on leave, 30s backup poll | **Accepted** |
+| 033 | Episodes: one visit to one window, lines merged, processed once when closed | **Accepted** |
+| 034 | One memory-extraction call per episode, structured, grounded, with provenance | **Accepted** |
+| 035 | Retention: raw snapshot text erased after 7 days once processed | **Accepted** |
+| 036 | Visibility culling: skip off-screen and Chromium-clamped elements | **Accepted** |
+| 037 | Handle 429s ourselves: per-minute → wait the server's delay; per-day → stop the batch | **Accepted** |
+| 038 | Retrieval default: hybrid RRF (BM25 + vectors), recency off; duplicates need same kind + nested numbers | **Accepted** |
+| 039 | Flash-Lite (`gemini-3.5-flash-lite`) for testing and evals | **Accepted** |
 
 ---
 
@@ -391,3 +399,80 @@ Proposed · 2026-10-25 · Phase 5 · refines ADR-011, 012, 013
   - Strip invisible direction marks (U+200E and similar). WhatsApp puts them on every label.
   - Cut a single huge value (a code editor's whole file) to the remaining budget.
 **Tradeoffs.** Canvas-rendered apps (Google Sheets cells, Figma) expose little or no text, and we accept the gap (ADR-005). Off-screen content in a long page may be included up to the cap. Gmail's message toolbar isn't exposed as `AXToolbar`, so about 10 lines of button labels remain.
+
+## ADR-032: Event-driven capture with AXObserver, a coalescer, flush on leave, and a 30s backup poll
+
+**Accepted** · 2026-10-25 · Phase 3 · supersedes the 5s poll in ADR-030
+
+**Context.** A 5s poll plus a two-read debounce missed anything on screen for less than about 10s, such as a 7-second glance at an email (challenge #13).
+**Decision.** Subscribe to the frontmost app's accessibility notifications (value, focus, window, title, selection, row count, live region, layout changes). A coalescer turns each burst into one read **1.5s after the last event, and never later than 5s after the first** (debounce with max-wait). Reads after a quiet period (`settled`) send right away, because the quiet period proves stability. On app deactivation (`leaving`), read the app one last time. A `poll` every 30s keeps the two-read rule for apps that send few notifications. Each capture carries its trigger (migration 003).
+**Measured.** TextEdit sends `AXFocusedWindowChanged`, `AXFocusedUIElementChanged` and `AXValueChanged`. A 2s glance was captured (`settled`), and leaving didn't resend unchanged text.
+**Gotchas, both fixed.**
+1. macOS delivers the old app's *deactivated* **after** the new app's *activated*, so cancelling the scheduled read on deactivate killed the new app's first read.
+2. A launching app refuses notification registration (`observing=0`), so we retry registration on each read, and retry a read that finds no window.
+**Tradeoff.** Notification quality varies per app, so the backup poll stays.
+
+## ADR-033: Episodes are one visit to one window, with lines merged, processed once when closed
+
+**Accepted** · 2026-10-25 · Phase 3
+
+**Decision.** An observation joins the open episode of the same `(bundle_id, window_title, source)` if it arrives within 5 minutes of the last one. Otherwise it starts a new episode. Episode text is **every distinct line seen during the visit, in first-seen order**, with digits masked for comparison. An episode closes after 5 minutes without a snapshot, and only closed episodes are processed. Loop detection moved from per-observation to per-episode, with the same prompt and grounding check, and evidence points to the snapshot that contains the quote.
+**Why.** 30 near-identical snapshots of one visit cost the same as one: one text, one pair of LLM calls.
+**Tradeoff.** Extraction lags the visit by 5 minutes. A window whose title never changes (one Slack channel all day) becomes one episode per visit, which is fine.
+
+## ADR-034: One memory-extraction call per episode, structured, grounded, with provenance
+
+**Accepted** · 2026-10-25 · Phase 3
+
+**Decision.** `memory/extract.py` makes one structured-output call per closed episode and returns at most 8 `MemoryItem`s (`fact | decision | number | event | person | plan`). Each has a **standalone sentence** (names, dates and exact figures resolved, never "this"), a verbatim `quote` (grounding-checked like loops), and `entities`. Memories link to their episode and source observation, and go into FTS5 through triggers. A local gate skips episodes under 80 chars without an LLM call.
+**Tradeoff.** Two calls per episode (memories + loops). Merging them would halve the calls (see ADR-037 and the quota question).
+
+## ADR-035: Retention erases raw snapshot text after 7 days once processed
+
+**Accepted** · 2026-10-25 · Phase 3
+
+**Decision.** `brain purge` (and later the worker) erases `observations.text` for snapshots older than 7 days whose episode has been processed. The row stays (with `purged_at`), so loop evidence keeps its link. Memories are kept. Unprocessed snapshots are never erased.
+**Why.** Keeping less raw screen text means less that can leak. Distilled memories are what's actually useful.
+
+## ADR-036: Visibility culling skips off-screen and Chromium-clamped elements
+
+**Accepted** · 2026-10-25 · Phase 3
+
+**Decision.** Read `AXPosition` and `AXSize` in the same batched call as role and children. Skip an element and its subtree if its frame doesn't intersect the window, **or** if it's thinner than 2pt on one side, which is how Chromium reports scrolled-away content: clamped to the scroll edge as a 1pt sliver (measured in Cursor's chat: `y=143, height=1`). Exactly 0×0 means "unknown", so we keep walking. For long native text areas, try `AXVisibleCharacterRange` → `AXStringForRange` (parameterized attribute). Cursor doesn't support it, but the culling covers that case.
+**Measured.** Notes 3,885 → 1,183 chars. Cursor 20,000 (capped) → 16,835 (not capped), with 400 subtrees skipped.
+
+## ADR-037: Handle 429s ourselves: per-minute means wait the server's delay, per-day means stop the batch
+
+**Accepted** · 2026-10-25 · Phase 3
+
+**Context.** The free tier allows **20 `gemini-3.8-flash` requests per day**. The SDK retried daily-quota 429s five times with growing backoff (about 40s wasted each), and each failure used up an episode's 3 attempts.
+**Decision.** The SDK retries only 408 and 5xx. Our client reads Google's 429 body: `QuotaFailure.quotaId` containing `PerDay` (or a `RetryInfo` delay over 60s) raises `QuotaExhausted`. The CLI stops the batch, and the worker pauses 30 minutes. A per-minute limit waits the server's `retryDelay` plus jitter, up to 3 times. Quota failures don't count against an episode's attempts.
+**Interview angle.** "Retry policy depends on *why* you're limited. Per-minute means wait, per-day means stop."
+
+## ADR-038: Retrieval defaults to hybrid RRF with recency off; duplicates need the same kind and nested numbers
+
+**Accepted** · 2026-10-25 · Phase 3 · settles ADR-009
+
+**Evidence** (`evals/results/retrieval.md`: 45 memories, 31 answerable queries, Flash-Lite extraction, `gemini-embedding-2` @ 768):
+
+| Mode | Recall@1 | Recall@5 | MRR@10 | p50 search |
+|---|---|---|---|---|
+| BM25 | 84% | 97% | 0.884 | 0.2 ms |
+| Vector | 90% | 100% | 0.946 | 0.6 ms |
+| **Hybrid (RRF k=60)** | **90%** | 97% | 0.941 | 0.6 ms |
+| Hybrid + recency | 81% | 97% | 0.879 | 0.6 ms |
+
+Query embedding (network) p50 605 ms. Search itself is under 1 ms locally.
+**Decision.** Default to `hybrid`. It ties vector on Recall@1 and wins exact-token queries (`PR #519`: BM25 1, vector 2, hybrid 1), which a work-memory tool gets asked constantly (ticket IDs, PR numbers, amounts). BM25 also works offline. **Recency off by default**, since it cost 9 points of Recall@1 because most questions aren't about "latest". Keep `hybrid_recency` for explicit "current / latest" questions later.
+**Known weakness.** RRF demotes a result that only one retriever finds ("cohort chart on slide 4": vector 3 → hybrid 6). Weighted RRF or a reranker could fix it, but tuning on 31 queries would overfit.
+**Caveat.** The differences are 1–3 queries out of 31: directional, not significant. Grow the eval set before tuning.
+**Duplicates.** Cosine distance ≤ 0.075 **and** the same `kind` **and** one memory's number set ⊆ the other's (challenge #17).
+
+## ADR-039: Flash-Lite (`gemini-3.5-flash-lite`) for testing and evals
+
+**Accepted** · 2026-10-25 · Phase 3 · your call; partly settles the per-stage model question in ADR-019
+
+**Context.** The `gemini-3.8-flash` free tier allows 20 requests a day (challenge #16).
+**Decision.** Set `LLM_MODEL=gemini-3.5-flash-lite` for test and eval runs. The default in `config.py` stays `gemini-3.8-flash` until Phase 4 compares the two on the loop eval.
+**Observed.** On the fixture week, Flash-Lite found **6 of 6** loops (Flash had found 5) with 0 false positives, but got the blog-post loop's counterparty wrong ("Dev"). It extracted 48 memories, mostly standalone and specific. Some low-value ones got through (a pytest failure, a SaaS renewal). 30 calls in about 2 minutes, with no quota errors.
+
