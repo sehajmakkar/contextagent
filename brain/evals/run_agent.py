@@ -87,10 +87,16 @@ def run_scenario(conn, llm, settings, sc) -> dict:
     d = run.draft
     if exp["outcome"] == "drafted" and d:
         body = d["body"].lower()
-        if d["thread_id"] != exp["thread_id"]:
-            fails.append(f"wrong thread {d['thread_id']}")
-        if not set(d["to"]) <= set(exp["allowed_to"]) or not d["to"]:
-            fails.append(f"recipients {d['to']}")
+        if exp.get("new_email"):
+            if d.get("kind") != "new":
+                fails.append(f"expected a new email, got a {d.get('kind')} in {d['thread_id']}")
+            if not set(d["to"]) <= set(exp["allowed_to"]):
+                fails.append(f"recipients {d['to']} (allowed: {exp['allowed_to'] or 'none, the user adds it'})")
+        else:
+            if d["thread_id"] != exp["thread_id"]:
+                fails.append(f"wrong thread {d['thread_id']}")
+            if not set(d["to"]) <= set(exp["allowed_to"]) or not d["to"]:
+                fails.append(f"recipients {d['to']}")
         fails += [f"missing '{r}'" for r in exp["required"] if r.lower() not in body]
         fails += [f"forbidden '{f}'" for f in exp["forbidden"] if f.lower() in body]
         if exp.get("missing_info") and not run.missing_info:
@@ -100,7 +106,7 @@ def run_scenario(conn, llm, settings, sc) -> dict:
     return {"id": sc["id"], "outcome": run.outcome, "fails": fails, "draft": d, "summary": run.summary,
             "steps": len(run.usages), "refused": sum(s["status"] == "refused" for s in run.steps),
             "tokens": sum(u.prompt_tokens + u.output_tokens + u.thinking_tokens for u in run.usages), "seconds": seconds,
-            "thread": mailbox.threads.get(exp.get("thread_id", ""), [])}
+            "thread": mailbox.threads.get(exp.get("thread_id", ""), [])}  # empty for new emails
 
 
 def judge(llm, sc, result) -> DraftScore:

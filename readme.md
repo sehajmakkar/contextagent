@@ -13,6 +13,48 @@ A privacy-first AI assistant for macOS that understands your desktop context, re
 - **MCP Integration (v2):** Let compatible AI assistants access relevant memories and context.
 - **Privacy First:** Store data locally on the Mac by default, with user-controlled permissions and deletion.
 
+## How it works
+
+```mermaid
+flowchart TD
+    subgraph APP["Swift menu-bar app (native)"]
+        AX["Accessibility events<br/>focus, window, value changed"] --> CO["Coalescer<br/>debounce + max wait, flush on leave"]
+        CO --> RD["Read the focused window's text<br/>no screenshots, password fields and denylisted apps skipped"]
+        INBOX["Inbox UI<br/>open loops, Close it for me"]
+        REVIEW["Draft review<br/>edit, fill placeholders, Approve & Send or Reject"]
+    end
+
+    subgraph BRAIN["Python brain (FastAPI on 127.0.0.1)"]
+        ING["Ingest<br/>redact secrets, drop duplicates, keep new lines"] --> DB[("SQLite on your Mac<br/>FTS5 + sqlite-vec")]
+        DB --> EP["Episodes<br/>one visit to one window, closed when you leave"]
+        EP --> MEM["Memory extraction<br/>facts with a quote that proves them"]
+        MEM --> EMB["Embeddings<br/>hybrid search: keywords + vectors"]
+        EP --> LOOPS["Loop detection<br/>promises, asks, follow-ups"]
+        LOOPS --> DEDUPE["Dedupe + lifecycle<br/>same loop seen twice, verified closes"]
+        AGENT["Agent loop (Gemini function calling)<br/>search memory, find and read the thread"]
+        AGENT --> GUARD{"Guardrails in code<br/>recipients in thread or known contact,<br/>no decisions on your behalf"}
+        GUARD --> DRAFT["Gmail draft<br/>reply in thread, or a new email"]
+        SEND["Approval endpoint<br/>same draft you saw, claimed once"] --> VERIFY["Verify it's in Sent<br/>loop closed with proof"]
+    end
+
+    RD -- "POST /observations" --> ING
+    DEDUPE --> INBOX
+    INBOX -- "Close it for me" --> AGENT
+    DRAFT -- "live steps (SSE)" --> REVIEW
+    REVIEW -- "Approve & Send (your click)" --> SEND
+    EMB -. "facts for the reply" .-> AGENT
+
+    MEM <-.-> GEM(["Gemini API<br/>stateless calls, nothing stored"])
+    LOOPS <-.-> GEM
+    AGENT <-.-> GEM
+    DRAFT <-.-> GMAIL(["Gmail API<br/>OAuth token in the macOS Keychain"])
+    SEND <-.-> GMAIL
+```
+
+- **Nothing is sent without your click.** The agent has no send tool; only the approval endpoint sends, and only the exact draft you reviewed.
+- **Screen text is data, not instructions.** It's delimited in every prompt, and the recipient and authority rules are enforced in code, not left to the model.
+- **One file holds everything:** `~/Library/Application Support/ContextAgent/brain.db`. Pause capture any time; delete everything from Settings.
+
 ### Inspired by Minimi (projectminimi.com)
 - adding the ai action agent feature i.e. ai agent can close the open loops for you.
 

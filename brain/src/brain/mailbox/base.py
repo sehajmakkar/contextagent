@@ -35,10 +35,11 @@ class ThreadSummary:
 @dataclass(frozen=True)
 class Draft:
     id: str
-    thread_id: str
+    thread_id: str | None      # the conversation it replies in; a new email gets its own thread on send
     to: list[str]
     subject: str
     body: str
+    kind: str = "reply"        # reply | new
 
 
 class MailboxError(RuntimeError):
@@ -51,7 +52,9 @@ class Mailbox(Protocol):
     def search_threads(self, query: str, max_results: int = 5) -> list[ThreadSummary]: ...
     def get_thread(self, thread_id: str) -> list[MailMessage]: ...
     def create_draft(self, thread_id: str, to: list[str], subject: str, body: str) -> Draft: ...
-    def update_draft(self, draft_id: str, thread_id: str, to: list[str], subject: str, body: str) -> Draft: ...
+    def create_new_draft(self, to: list[str], subject: str, body: str) -> Draft: ...   # not a reply: no thread
+    def update_draft(self, draft_id: str, thread_id: str | None, to: list[str], subject: str, body: str,
+                     kind: str = "reply") -> Draft: ...
     def get_draft(self, draft_id: str) -> Draft: ...
     def delete_draft(self, draft_id: str) -> None: ...
     def send_draft(self, draft_id: str) -> str: ...          # returns the sent message id

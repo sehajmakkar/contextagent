@@ -6,6 +6,7 @@ let package = Package(
     platforms: [.macOS(.v14)],
     targets: [
         .executableTarget(name: "ContextAgent", path: "Sources/ContextAgent"),
-        .testTarget(name: "ContextAgentTests", dependencies: ["ContextAgent"], path: "Tests/ContextAgentTests"),
+        .testTarget(name: "ContextAgentTests", dependencies: ["ContextAgent"], path: "Tests/ContextAgentTests",
+                    resources: [.copy("Fixtures")]),
     ]
 )

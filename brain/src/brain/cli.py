@@ -144,8 +144,6 @@ def _detect_pending(conn) -> None:
     console.print(f"\nEpisodes {len(todo) - failed}/{len(todo)} processed ({skipped} skipped by the local gate) · "
                   f"{memories} memories · {created} loop(s) created, {merged} merged"
                   + (f" · [red]{failed} failed, run `brain process` to retry[/]" if failed else ""))
-    if held := pipeline.held_back(conn, s):
-        console.print(f"[yellow]{held} live-capture episode(s) held back:[/] free tier, ALLOW_FREE_TIER_LIVE is off (ADR-027)")
     _print_usage(usages)
     if memories:
         _embed(conn, llm)
@@ -251,10 +249,7 @@ def serve(reload: bool = typer.Option(False, help="Restart on code changes (dev)
     import uvicorn
 
     s = get_settings()
-    if not s.live_detection_allowed:
-        console.print("[yellow]Free tier:[/] live captures are stored locally but NOT sent to Gemini (ADR-027).")
-    else:
-        console.print(f"[bold red]Live detection is on[/] ({s.gemini_tier} tier). Captured screen text goes to Gemini.")
+    console.print(f"Live detection on ({s.llm_model}): captured screen text is sent to Gemini. Pause capture in the app when needed.")
     uvicorn.run("brain.api:app", host="127.0.0.1", port=s.port, reload=reload, log_level="info")
 
 
@@ -447,8 +442,7 @@ def gmail_status() -> None:
     except MailboxError as e:
         console.print(f"[red]{_e(e)}[/]")
         raise typer.Exit(1)
-    scope = get_settings().mail_scope
-    console.print(f"Connected as [bold]{account}[/]. Agent scope: {_e(scope) if scope else '[yellow]whole mailbox[/]'}")
+    console.print(f"Connected as [bold]{account}[/].")
 
 
 @app.command(name="gmail-logout")
@@ -473,5 +467,5 @@ def reset(yes: bool = typer.Option(False, "--yes", help="Skip the confirmation."
 def where() -> None:
     """Print where data lives and which model is configured."""
     s = get_settings()
-    console.print(json.dumps({"db": str(s.db_path), "model": s.llm_model, "tier": s.gemini_tier,
+    console.print(json.dumps({"db": str(s.db_path), "model": s.llm_model,
                               "api_key_set": bool(s.gemini_api_key)}, indent=2))

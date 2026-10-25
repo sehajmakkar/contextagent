@@ -18,21 +18,39 @@ enum Main {
 }
 
 struct ContextAgentApp: App {
-    @State private var model: AppModel
+    @State private var capture: AppModel
+    @State private var inbox: InboxModel
 
     init() {
-        let model = AppModel()
-        model.start()
-        _model = State(initialValue: model)
+        let capture = AppModel()
+        capture.start()
+        let inbox = InboxModel()
+        inbox.startPolling()
+        _capture = State(initialValue: capture)
+        _inbox = State(initialValue: inbox)
     }
 
     var body: some Scene {
         MenuBarExtra {
-            MenuView(model: model)
+            PanelView(capture: capture, inbox: inbox)
         } label: {
-            Image(systemName: model.menuBarSymbol)
+            // The open-loop count right in the menu bar, so you see it without opening anything.
+            HStack(spacing: 3) {
+                Image(systemName: capture.menuBarSymbol)
+                if !inbox.open.isEmpty { Text("\(inbox.open.count)") }
+            }
         }
         .menuBarExtraStyle(.window)
+
+        Window("Context Agent", id: "dashboard") {
+            DashboardView(capture: capture, inbox: inbox)
+        }
+        .defaultSize(width: 980, height: 640)
+
+        Window("Context Agent Settings", id: "settings") {
+            SettingsView(capture: capture, inbox: inbox)
+        }
+        .windowResizability(.contentSize)
     }
 }
 

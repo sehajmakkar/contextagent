@@ -1,0 +1,1 @@
+{"ok": true, "model": "gemini-3.8-flash", "auto_detect_running": false, "observations": 2, "captured": 0, "pending": 0, "failed": 0, "open_loops": 1, "last_capture_at": null, "last_error": null, "agent_ready": true, "agent_detail": "Gmail connected"}

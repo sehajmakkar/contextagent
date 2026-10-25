@@ -492,9 +492,63 @@ A Gmail reply needs **both** `threadId` (so it groups in *your* Gmail) **and** `
 
 ---
 
+## Phase 6: the inbox UI
+
+### Server-Sent Events (SSE)  (Phase 6 · ADR-049)
+**What:** one long-lived HTTP response with `Content-Type: text/event-stream`. The server writes `data: {json}\n\n` whenever something happens, and the client reads lines as they arrive.
+**SSE vs polling vs WebSockets:** polling is laggy and chatty. WebSockets are two-way and heavier. **SSE fits one-way progress** from server to client, over plain HTTP.
+**Our implementation:** FastAPI's `StreamingResponse` drains a `queue.Queue`, and the agent runs in a worker thread with **its own SQLite connection**, pushing events through `on_event`. In Swift, `URLSession.bytes(for:)` → `.lines` → an `AsyncThrowingStream<AgentEvent>`, where cancelling the stream cancels the request.
+**Interview Q:** "How do you show agent progress in a UI?" → Stream step events (SSE), make each step human-readable, show refused steps too (that's the guardrails visibly working), and make the run recoverable if the stream drops.
+
+### SwiftUI with `@Observable` and the main actor  (Phase 6 · [InboxModel.swift](app/Sources/ContextAgent/Inbox/InboxModel.swift))
+`@Observable` (macOS 14+) re-renders only the views that read a property that changed. The model is `@MainActor`, so UI state changes happen on the main thread, and network calls are `async` (they suspend instead of blocking). Each loop's run is a small **state machine**: `running → draft → sending → sent`, or `finished / failed`. The view is a pure function of that state.
+
+**Gotcha we hit (cursor jumping to the end):** the draft editor was bound with `Binding(get: { run.editedBody }, set: …)`, where `run` was a *copy* of the struct, taken when the view was built. After a keystroke, the setter updated the model, but the getter still returned the old copy. The text view saw a different string, replaced its contents, and moved the cursor to the end. That made it impossible to paste a link into the middle of the draft. **Fix:** the editor owns its text as `@State` and pushes changes to the model with `.onChange` ([AgentRunView.swift](app/Sources/ContextAgent/Views/AgentRunView.swift)). We also stopped the 3 s refresh from re-assigning unchanged arrays: with `@Observable`, *any* assignment counts as a change, even an equal value, so every tick redrew every card.
+**Interview Q:** "Why would a SwiftUI text field lose its cursor?" → Its binding hands back a value that differs from what was just typed, often a stale captured copy, so the text view resets. Give editable text one owner (`@State`) and sync outward.
+
+**Quiet status:** a background pass shows only a small pulsing dot next to the loop count, and only while capture is on. Minimi shows nothing, and a spinner on every capture reads as "something is wrong". When capture is paused, nothing new is being read, so nothing should look busy.
+
+### Trust UX for an acting agent  (Phase 6 · ADR-050)
+- **Show the evidence:** the source app icon, the window, the exact quote that created the loop.
+- **Show the work:** live steps, including "refused by a guardrail".
+- **Keep the human in charge:** an editable draft, one explicit **Approve & Send**, disabled while `[[placeholders]]` remain.
+- **Say how things closed:** you, inferred from the screen, or sent by the agent with your approval, with a link to the email.
+- **Make undo cheap:** Reopen, Reject, Not a loop.
+**Interview Q:** "What makes users trust an agent that sends email?" → Provenance, visible steps, one explicit human checkpoint for every irreversible action, and easy undo.
+
+### Rendering untrusted text in SwiftUI  (Phase 6)
+`Text("literal")` treats string *literals* as `LocalizedStringKey`, which parses Markdown. `Text(verbatim:)` never does. All model and screen text goes through `Text(verbatim:)`, so an email body can't inject a clickable link or formatting into our UI. It's the Phase 1 terminal-markup bug's lesson, applied to the GUI.
+
+### FastAPI, thread pools and SQLite  (Phase 6 · challenge #26)
+FastAPI runs sync endpoints *and* sync `yield` dependencies on a thread pool. A request's connection can be opened, used and closed on **different threads**. `sqlite3` forbids that by default (`check_same_thread=True`). Request-scoped connections that are never shared can safely use `check_same_thread=False`. Long-running work (the agent, the detection worker) opens its own connection in its own thread. **Lesson:** sequential tests hide concurrency bugs, so add a test that fires requests in parallel.
+
+### Contract tests with real responses  (Phase 6 · [InboxTests.swift](app/Tests/ContextAgentTests/InboxTests.swift))
+The Swift `Decodable` types and the Python Pydantic models are two copies of one contract. We captured **real responses** from a running brain (anonymized), stored them as test fixtures, and decode them in a Swift test. A renamed field now fails a test instead of silently breaking the panel.
+
+---
+
 ## Log: what we actually learned
 
 _Newest first. Add entries as tasks finish._
+
+### 2026-10-25: Verifiers can over-block, and quota is a demo risk
+- The authority verifier fixed the lease overstep but then blocked "confirming a talk slot", which was the owed task. **A verifier needs its own negative and positive cases**, like the close verifier (Phase 4). Wording now: block only decisions beyond what's owed.
+- The free-tier daily quota ran out from evals plus live testing. For a demo, budget calls: don't run evals the morning of a shoot, keep capture paused until filming, and clear any backlog first.
+
+### 2026-10-25: New emails when there's no thread (your design)
+- Thread → reply. No thread → a new email: pre-filled with the loop's known address, otherwise you type it.
+- **Security lesson:** a feature can quietly remove a guardrail. Here the thread-participant rule didn't apply to new emails, so recipient choice moved from the model to you (the model may only use the known contact).
+- **Eval lesson:** a same-name collision (two Arjun Raos) showed that "find the thread" needs a right-person check.
+
+### 2026-10-25: Making it demo-ready (your feedback)
+- "I can't run commands in a demo" exposed two defaults that were right for privacy and wrong for a demo: hold-back-everything, and a 5-minute episode gap. The fix keeps the privacy property and removes the friction: a **live scope** (only `[CA-TEST]` windows reach Gemini) and **end-of-visit events** (leaving a window closes its episode immediately).
+- **Product lesson:** test the system the way it will be *shown*, not the way it's *built*. Our test commands were developer affordances, not a user flow.
+
+### 2026-10-25: Phase 6 built (the inbox UI)
+- Panel, dashboard and settings. Close it for me streams live steps over SSE. Approve stays disabled while placeholders remain. Drafts survive restarts.
+- The first live run found a concurrency bug (parallel UI requests vs SQLite thread affinity). Reproduced in a test, then fixed. All endpoints 200.
+- Contract tests: real API responses (anonymized) decoded by the Swift types.
+- Still to do: your hands-on test of the full UI flow.
 
 ### 2026-10-25: Phase 5 verified live on real Gmail
 - Scoped mailbox (ADR-048) so the agent saw only `[CA-TEST]` threads in your main inbox.

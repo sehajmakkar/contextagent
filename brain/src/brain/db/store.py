@@ -25,12 +25,14 @@ def now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
 
 
-def connect(path: Path | str) -> sqlite3.Connection:
+def connect(path: Path | str, *, check_same_thread: bool = True) -> sqlite3.Connection:
+    """check_same_thread=False is for request-scoped API connections: FastAPI may open, use and close one on
+    different pool threads, but never from two threads at once."""
     in_memory = str(path) == ":memory:"
     if not in_memory:
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    conn = sqlite3.connect(path)
+    conn = sqlite3.connect(path, check_same_thread=check_same_thread)
     # sqlite-vec is a compiled extension; allow loading only for the moment we load it.
     conn.enable_load_extension(True)
     sqlite_vec.load(conn)

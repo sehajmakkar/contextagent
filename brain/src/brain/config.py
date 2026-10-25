@@ -1,6 +1,5 @@
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal
 
 from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -12,7 +11,6 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=REPO_ROOT / ".env", extra="ignore")
 
     gemini_api_key: SecretStr | None = None
-    gemini_tier: Literal["free", "paid"] = "free"
     llm_model: str = "gemini-3.8-flash"
     embed_model: str = "gemini-embedding-2"
     embed_dims: int = 768  # must match migrations/005_vectors.sql
@@ -26,12 +24,8 @@ class Settings(BaseSettings):
     port: int = 8765
     # The OAuth client you download from Google Cloud (gitignored: credentials*.json). See plan.md, Phase 5.
     gmail_client_secrets: Path = REPO_ROOT / "credentials.json"
-    # A Gmail filter appended to every agent search, e.g. 'subject:"[CA-TEST]"'. Required on the free tier (ADR-048).
-    mail_scope: str = ""
     auto_detect: bool = True             # background detection while `brain serve` runs
     detect_min_interval_s: float = 6.0   # ≤ 10 detection calls a minute
-    # Live screen captures go to Gemini only on the paid tier, unless you opt in (test data only!).
-    allow_free_tier_live: bool = False
 
     @property
     def db_path(self) -> Path:
@@ -41,10 +35,6 @@ class Settings(BaseSettings):
     def token_path(self) -> Path:
         return self.data_dir.expanduser() / "brain.token"
 
-    @property
-    def live_detection_allowed(self) -> bool:
-        """ADR-027: free-tier content may be used by Google, so real screens need paid or an explicit opt-in."""
-        return self.gemini_tier == "paid" or self.allow_free_tier_live
 
 
 @lru_cache

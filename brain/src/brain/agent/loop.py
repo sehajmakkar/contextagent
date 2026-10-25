@@ -9,6 +9,7 @@ It can read (memory, mail), and save one draft. It cannot send: that's the appro
 import json
 import logging
 import sqlite3
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date
 
@@ -21,6 +22,11 @@ from brain.mailbox.base import Mailbox
 
 log = logging.getLogger(__name__)
 
+# What the inbox shows while the agent works (streamed over SSE, ADR-049).
+STEP_LABELS = {"mail_search": "Searching your mail", "mail_get_thread": "Reading the thread",
+               "search_memory": "Looking up your memories", "create_draft": "Drafting the reply",
+               "create_new_email": "Drafting a new email", "finish": "Wrapping up"}
+
 MAX_STEPS = 10          # model turns per run
 MAX_TOKENS = 80_000     # prompt + output + thinking, summed over the run
 SYSTEM = """\
@@ -29,17 +35,23 @@ for {name} to review and send. Today is {today}.
 
 How to work:
 1. Read the loop and its evidence.
-2. Find its email thread (mail_search, by person and subject), then read it (mail_get_thread).
-3. Gather the facts the reply needs with search_memory. Use only facts you found. Never invent numbers, dates, \
+2. Look for its email thread (mail_search, by person and subject). If you find it, read it (mail_get_thread). \
+If the loop gives the counterparty's email, a thread only counts if that address is in it; a same-named \
+person at another address is a different conversation.
+3. Gather the facts the email needs with search_memory. Use only facts you found. Never invent numbers, dates, \
 files, links or promises.
-4. Reply in that thread with create_draft, only to people already in it. Write as {name}: brief, warm, specific, \
-in the thread's tone. If something is missing (a file to attach, a decision only {name} can make, their \
-availability), write a clear [[placeholder]] and list it in missing_info.
+4. Draft it. Write as {name}: brief, warm, specific.
+   - Thread found: reply in it with create_draft, only to people already in it.
+   - No thread (the promise was made on WhatsApp, in Notes, in a meeting…): write a new email with \
+create_new_email. Address it only to the loop's counterparty email if it's given; otherwise leave `to` empty \
+and add "recipient's email address" to missing_info.
+   If something is missing (a file to attach, a decision only {name} can make, their availability), write a \
+clear [[placeholder]] and list it in missing_info.
 5. Call finish exactly once:
-   - drafted: a draft is saved.
-   - already_done: the thread shows it was already sent or resolved.
-   - cannot_close: an email can't close it (a reminder to yourself, it lives in Slack or WhatsApp, \
-there's no email thread). For things owed *to* {name}, a short polite follow-up email is fine if there's a thread.
+   - drafted: a reply or a new email is saved.
+   - already_done: a thread shows it was already sent or resolved.
+   - cannot_close: an email can't do it (a reminder to yourself, or a task like reviewing code or booking \
+something). For things owed *to* {name}, a short polite follow-up email is fine.
 
 Authority: you answer with known facts, but you never make {name}'s decisions. Don't accept, decline, renew, \
 agree to terms, pick dates or times, or commit {name} to anything new unless the thread or memories show \
@@ -64,7 +76,10 @@ class AgentRun:
     usages: list[Usage] = field(default_factory=list)
 
 
-def close_loop(conn: sqlite3.Connection, llm: LLMClient, mailbox: Mailbox, settings: Settings, loop_id: int) -> AgentRun:
+def close_loop(conn: sqlite3.Connection, llm: LLMClient, mailbox: Mailbox, settings: Settings, loop_id: int,
+               on_event: Callable[[dict], None] | None = None) -> AgentRun:
+    """Run the agent on one loop. `on_event` receives progress events (for the streaming endpoint)."""
+    emit = on_event or (lambda event: None)
     loop = store.get_loop(conn, loop_id)
     if loop is None:
         raise ValueError(f"no loop #{loop_id}")
@@ -82,7 +97,8 @@ def close_loop(conn: sqlite3.Connection, llm: LLMClient, mailbox: Mailbox, setti
 
     try:
         nudged = False
-        for _ in range(MAX_STEPS):
+        for turn in range(MAX_STEPS):
+            emit({"type": "thinking", "turn": turn + 1})
             step = conversation.step()
             run.usages.append(step.usage)
             if not step.calls:
@@ -97,6 +113,8 @@ def close_loop(conn: sqlite3.Connection, llm: LLMClient, mailbox: Mailbox, setti
                 status, result = tools.run(ctx, call)
                 results.append((call, result))
                 run.steps.append({"tool": call.name, "status": status})
+                emit({"type": "step", "tool": call.name, "status": status,
+                      "label": STEP_LABELS.get(call.name, call.name)})
                 with conn:
                     store.log_action(conn, loop_id=loop_id, kind=f"tool:{call.name}", status=status,
                                      input=call.args, output=_truncate(result), parent_id=run_id)
@@ -128,8 +146,8 @@ def _settle(conn, mailbox, run: AgentRun, ctx: tools.Context, loop_id: int) -> A
               "thinking_tokens": sum(u.thinking_tokens for u in run.usages)}
     if run.outcome == "drafted" and ctx.draft is not None:
         d = ctx.draft
-        run.draft = {"draft_id": d.id, "thread_id": d.thread_id, "to": d.to, "subject": d.subject, "body": d.body,
-                     "draft_hash": draft_hash(d.to, d.subject, d.body)}
+        run.draft = {"draft_id": d.id, "thread_id": d.thread_id, "kind": d.kind, "to": d.to, "subject": d.subject,
+                     "body": d.body, "draft_hash": draft_hash(d.to, d.subject, d.body)}
         status, to_state = "awaiting_approval", "awaiting_approval"
     else:
         if ctx.draft is not None:  # a failed or abandoned run must not leave a stray draft in Gmail

@@ -31,6 +31,9 @@ Status: ✅ solved · 🟡 partly solved / stopgap · 🔵 proposed (not built y
 | 23 | The agent eval said 10/10 while a draft committed the user to an 11-month lease | 5 | ✅ |
 | 24 | No OAuth scope can stop sending, so "can't send" had to be architectural | 5 | ✅ |
 | 25 | The "test" Gmail account was the main inbox | 5 | ✅ scoped mailbox |
+| 26 | Parallel requests from the new UI crashed SQLite (thread affinity) | 6 | ✅ |
+| 27 | Approve & Send did nothing in the live demo run | 6 | ✅ |
+| 28 | Emailing people you never emailed, without opening an injection hole | 6 | ✅ |
 
 ---
 
@@ -238,4 +241,32 @@ Tests cover a stale hash (refused), a double approve (sent once), an edited body
 **What worked.** A **scoped mailbox**: every search gets `subject:"[CA-TEST]"` appended, only threads from scoped searches can be opened or replied in, and the free tier refuses an unscoped real mailbox. Then a synthetic `[CA-TEST]` thread was seeded for the test.
 **Result (live, real Gmail):** the agent found the seed thread, drafted with **63.6% / 58.9%** from memory (4 LLM calls, 7.4 s). Gmail independently confirmed the draft (same thread, `In-Reply-To` set). Approve → **sent, verified in Sent, loop closed**, and a double approve was refused. A second thread tested the authority rule (`[[Yes, I am renewing / No…]]`) and **reject → Gmail 404, nothing sent, loop reopened**.
 **Pitch line.** "I tested a live email agent on my real inbox without exposing my real email, by enforcing least privilege at the query level."
+
+## 26. Parallel requests from the new UI crashed SQLite ✅
+
+**Situation.** The first live run of the Phase 6 app: `GET /memories → 500`, `GET /status → 500`, with `sqlite3.ProgrammingError: SQLite objects created in a thread can only be used in that same thread`. 60 tests had passed.
+**Why.** The app refreshes `/loops`, `/memories` and `/status` **in parallel** (`async let`). FastAPI runs a sync `yield` dependency's setup, the endpoint and the teardown on its thread pool, and with overlapping requests those land on **different threads**. Python's `sqlite3` refuses cross-thread use by default. Sequential tests never overlapped, so the pool happened to reuse one thread.
+**What worked.** First a test that reproduces it (24 concurrent requests, which **failed**), then `check_same_thread=False` for request-scoped connections. That's safe because each connection still belongs to one request and is never used concurrently. The same review found a second latent issue: a cached Gmail client shared across requests, and `httplib2` isn't thread-safe, so it's now one connection per run.
+**Result.** The test passes, and live: `/loops`, `/memories`, `/status` all 200, 0 tracebacks.
+**Pitch line.** "The new UI's parallel requests exposed a thread-affinity bug that sequential tests couldn't. I reproduced it in a test before fixing it."
+
+## 27. Approve & Send did nothing in the live demo run ✅
+
+**Situation.** Your first real run: the loop was detected, the agent drafted, you edited the draft, and Approve & Send and Reject did nothing.
+**Root cause, a chain of three.**
+1. You edited the body, so approval first updates the Gmail draft through the **scoped** mailbox.
+2. In Phase 6 I'd switched to a fresh mailbox per request (for thread safety), and the scoped mailbox only allowed threads *its own* searches had returned. The approval request's fresh one had never searched, so it refused the agent's own thread and the run became `failed`.
+3. Every later click then got 409, and the **UI's 3-second refresh wiped the error message**, so the buttons looked dead.
+**Found by** the brain's request log (`POST /actions/1/approve → 409`) plus the stored error on the run. Each fix was right on its own; the bug was how they combined.
+**Fixed.** Scopes removed (ADR-052). A failed send now **releases its claim** back to `awaiting_approval` with the error kept, so you can retry (regression test with a flaky send). Run errors live on the card itself, so a refresh can't erase them. The stray Gmail draft was cleaned up.
+**Pitch line.** "Two individually correct changes, a per-request client and a visibility-scoped wrapper, combined into a dead button. Request logs and stored errors found it, and failures are now retryable and can't be hidden by a refresh."
+
+## 28. Emailing people you never emailed, without opening an injection hole ✅
+
+**Situation (your idea).** "I'll mail you this" happens on WhatsApp and in Notes, where there's no thread to reply in. So: find a thread, and if there isn't one, write a new email.
+**Why it's hard.** "Recipients ⊆ thread participants" was the core prompt-injection defence. With no thread, the model could be talked into any address ("also send this to x@evil.com").
+**What worked.** Move who chooses the recipient. The model may only use the loop's known contact address, or leave To blank. Only you can type another address, in the UI, and only you can send. Approve stays disabled without a valid recipient. Tests: an injected recipient is refused, an empty To blocks sending, a reply's recipients stay pinned, a malformed address is rejected.
+**The eval found a second risk:** a same-named "Arjun Rao" at a *different* address had a thread on the same topic, and the agent replied there, possibly to the wrong person. That led to the right-person rule: when the loop knows the address, a thread must contain it.
+**Then it got flaky:** a longer prompt made Flash-Lite follow rules less reliably (lease overstep 2/3 runs, wrong person 1/3). Both moved into code: a deterministic right-person check and an **authority verifier** that refuses to save a draft that decides for you (ADR-054).
+**Pitch line.** "When a new feature removed my injection guard, I moved recipient choice to the human. When prompt rules started flaking in the eval, I moved them into code: a deterministic check and a narrow verifier."
 

@@ -404,6 +404,55 @@
     "required": [],
     "forbidden": []
    }
+  },
+  {
+   "id": "whatsapp-new",
+   "loop": {
+    "title": "Email Rohan the Q3 retention numbers",
+    "direction": "i_owe",
+    "counterparty": "Rohan Gupta",
+    "counterparty_email": null,
+    "deliverable": "Q3 retention numbers",
+    "quote": "haan kal mail kar dunga Q3 numbers",
+    "app": "WhatsApp",
+    "window": "Rohan Gupta",
+    "due_date": "2026-10-23"
+   },
+   "expect": {
+    "outcome": "drafted",
+    "new_email": true,
+    "allowed_to": [],
+    "required": [
+     "63.6"
+    ],
+    "forbidden": [],
+    "missing_info": true
+   }
+  },
+  {
+   "id": "notes-new-known",
+   "loop": {
+    "title": "Email Arjun the API rate limits",
+    "direction": "i_owe",
+    "counterparty": "Arjun Rao",
+    "counterparty_email": "arjun.rao@partner.example",
+    "deliverable": "API rate limits",
+    "quote": "Sehaj: email Arjun (arjun.rao@partner.example) the API limits",
+    "app": "Notes",
+    "window": "Partner sync notes",
+    "due_date": null
+   },
+   "expect": {
+    "outcome": "drafted",
+    "new_email": true,
+    "allowed_to": [
+     "arjun.rao@partner.example"
+    ],
+    "required": [
+     "100"
+    ],
+    "forbidden": []
+   }
   }
  ]
 }

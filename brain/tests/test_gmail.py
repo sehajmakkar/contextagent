@@ -48,3 +48,13 @@ def test_drafts_are_real_replies_in_the_same_thread():
     # Without these two headers the reply shows up as a brand-new email in Priya's inbox.
     assert sent["In-Reply-To"] == "<CAF123@mail.gmail.com>" and sent["References"] == "<CAF123@mail.gmail.com>"
     assert sent["To"] == "priya.sharma@northwind.example" and "63.6%" in sent.get_content()
+
+
+def test_a_new_email_has_no_thread_or_reply_headers():
+    box, users = mailbox()
+    users.drafts.return_value.create.return_value.execute.return_value = {"id": "d2", "message": {"id": "m9", "threadId": "t9"}}
+    draft = box.create_new_draft([], "DBMS notes", "Hi Rohan")
+    body = users.drafts.return_value.create.call_args.kwargs["body"]["message"]
+    sent = email.message_from_bytes(base64.urlsafe_b64decode(body["raw"]), policy=email.policy.default)
+    assert "threadId" not in body and sent["In-Reply-To"] is None and sent["To"] is None
+    assert draft.kind == "new" and draft.thread_id == "t9"

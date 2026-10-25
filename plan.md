@@ -163,17 +163,21 @@ Backup scenarios (Phase 7): "reply to the recruiter with my availability" (needs
 
 **Goal:** the demo looks and feels like a real product.
 
-- [ ] SwiftUI `MenuBarExtra` popover showing open loops grouped by due date, each with an evidence snippet and its source app or time.
-- [ ] Reference (your Minimi screenshots, see `docs/minimi-teardown.md`): a dashboard with **Inbox** (open/closed counts, greeting, empty state) next to **Recent memories** (app icon + one line each), plus a compact pinned panel. Ours adds **Close it for me** next to their **Resolve**.
-- [ ] **Close it for me** streams agent progress live ("Finding thread… Reading memory… Drafting…") over SSE from the brain.
-- [ ] Draft review: editable body, recipients shown, **Approve & Send**, **Dismiss**, **Not a loop** (that last one feeds back into the eval set).
-- [ ] Closed view: each loop with a link to proof (the sent email).
-- [ ] Settings: pause capture, excluded apps, **Delete all data**, a "what leaves your Mac" disclosure, and the free-tier warning.
-- [ ] A "Demo mode" badge when the brain is in `DEMO_MODE`, so reviewers know they're seeing fixture data.
-- [ ] Polish: empty states, error states, a cat-free icon (don't copy Minimi's brand).
+- [x] **Panel** ([PanelView.swift](app/Sources/ContextAgent/Views/PanelView.swift)): Minimi-style loop cards (app icon · window · due badge · title · who owes whom + why · source quote), app filter chips, empty and error states, open-loop count in the menu bar.
+- [x] **Close it for me** with live steps over **SSE** ([AgentRunView.swift](app/Sources/ContextAgent/Views/AgentRunView.swift), ADR-049), including "refused by a guardrail" steps.
+- [x] **Draft review:** recipients and subject, editable body, **Approve & Send (disabled while `[[placeholders]]` remain)**, Reject. Drafts awaiting approval are restored after a restart.
+- [x] Resolve · Not a loop · Reopen. Closed loops show how they closed and link to the sent email.
+- [x] **Dashboard** window ([DashboardView.swift](app/Sources/ContextAgent/Views/DashboardView.swift)): Inbox + Recent memories with app icons.
+- [x] **Settings** ([SettingsView.swift](app/Sources/ContextAgent/Views/SettingsView.swift)): pause, Accessibility, exclusions, what leaves your Mac (tier + agent readiness), **Delete all data** (confirmation, then VACUUM).
+- [x] Backend: `/loops` (bundle id, last run, proof URL), `/memories`, `/data/delete`, `/status` agent readiness, SSE stream. Fixed a concurrency bug found live (challenge #26).
+- [x] Tests: 60 Python (SSE end to end, delete, readiness, concurrency) + 21 Swift (SSE parsing, placeholder guard, due groups, **real API responses decoded**).
+- [x] Demo-ready after your feedback (ADR-051): `LIVE_SCOPE` + end-of-visit, so a `[CA-TEST]` email becomes a loop seconds after you switch away. No commands beyond `make brain` + the app.
+- [x] **(You)** Hands-on run: Gmail reply and WhatsApp → new email both sent and verified (2026-10-25).
+- [x] Polish from that run: pulsing dot instead of the "Checking…" spinner (hidden while paused), draft editor cursor fix, flow diagram in `readme.md`.
+- [ ] Demo shoot. [~] "Demo mode" badge moved to Phase 7 with demo mode itself.
 
 **Concepts:** SwiftUI state, `MenuBarExtra`, streaming UX for agents, trust UX (showing evidence and keeping the human in control).
-**Done when:** you can run the demo script without touching the terminal.
+**Done when:** you can run the demo script without touching the terminal. ⏳ Your hands-on test.
 
 ---
 

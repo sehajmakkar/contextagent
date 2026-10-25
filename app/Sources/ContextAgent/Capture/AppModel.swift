@@ -54,6 +54,9 @@ final class AppModel {
     private var workspaceObservers: [NSObjectProtocol] = []
     @ObservationIgnored private lazy var events = AXEventSource { [weak self] _ in self?.changeNoticed() }
 
+    /// Captures are waiting to be checked for commitments. Only shown while capture is on: paused means quiet.
+    var isProcessing: Bool { !isPaused && (brainStatus?.pending ?? 0) > 0 }
+
     var menuBarSymbol: String {
         if !isTrusted { return "eye.trianglebadge.exclamationmark" }
         if isPaused { return "eye.slash" }
@@ -183,6 +186,13 @@ final class AppModel {
 
         let decision = policy.decide(snapshot, trigger: trigger)
         log.info("\(trigger.rawValue, privacy: .public) \(bundleID, privacy: .public) chars=\(snapshot.text.count) → \(String(describing: decision), privacy: .public)")
+        defer {
+            // Leaving ends the visit: tell the brain, so the episode is processed now (sent or unchanged alike).
+            if trigger == .leaving {
+                let brain = self.brain
+                Task { try? await brain.endVisit(bundleID: snapshot.bundleID, windowTitle: snapshot.windowTitle) }
+            }
+        }
         switch decision {
         case let .skip(reason):
             record(snapshot, trigger, reason.rawValue)

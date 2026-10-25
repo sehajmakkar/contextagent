@@ -49,7 +49,7 @@ Interview angle: the one-sentence answer to "why?"
 | 024 | Real first: demo mode, fake mailbox, Docker, and recorded responses move to Phase 7 | **Accepted** |
 | 025 | Loop detection v0: one call per observation, confidence ≥ 0.6, grounding check, exact-quote dedupe | **Accepted** |
 | 026 | Actions are risk-classed tools behind connectors, with approval keyed on risk | Proposed (Phase 5) |
-| 027 | Live captures stay local on the free tier; detection needs paid or an explicit opt-in | **Accepted** |
+| 027 | ~~Live captures stay local on the free tier~~ | Superseded by 052 |
 | 028 | Swift Package + Makefile bundling instead of an `.xcodeproj` | **Accepted** |
 | 029 | Local API auth: 0600 token file + Host-header allowlist + 127.0.0.1 bind | **Accepted** |
 | 030 | Capture triggers and dedupe: app switch + 5s poll, two-read debounce, masked line novelty | **Accepted** |
@@ -70,7 +70,13 @@ Interview angle: the one-sentence answer to "why?"
 | 045 | The agent: hand-written loop, provider-neutral tool types, risk-classed tools with guardrails in code, no send tool | **Accepted** |
 | 046 | Approval protocol: approve the hash you saw, claim-once, send, then verify in Sent before closing | **Accepted** |
 | 047 | FakeMailbox pulled forward from Phase 7 for tests and agent evals | **Accepted** (amends 024) |
-| 048 | Scoped mailbox: a fixed Gmail filter on every agent search; required on the free tier | **Accepted** |
+| 048 | ~~Scoped mailbox~~ | Superseded by 052 |
+| 049 | Agent progress over Server-Sent Events (SSE) | **Accepted** |
+| 050 | Inbox UI: Minimi-style panel + dashboard + settings; trust guards in the UI | **Accepted** |
+| 051 | Demo-ready flow: end the visit when you leave the window (the live-scope part superseded by 052) | **Accepted** |
+| 052 | Your call: remove the free-tier gating and both scopes; every capture is processed | **Accepted** · supersedes 027, 048, part of 051 |
+| 053 | No thread → a new email; recipients come only from the loop's known contact or from you | **Accepted** · amends 012, 045 |
+| 054 | Prompt rules that kept flaking became code: authority verifier + right-person check | **Accepted** |
 
 ---
 
@@ -574,4 +580,71 @@ Query embedding (network) p50 605 ms. Search itself is under 1 ms locally.
 **Decision.** [ScopedMailbox](brain/src/brain/mailbox/scoped.py) appends `MAIL_SCOPE` (e.g. `subject:"[CA-TEST]"`) to every search as `(<query>) <scope>`. Only threads a scoped search returned can be opened or drafted into, so a thread id the agent guessed or read in injected text is refused. On the free tier, `open_mailbox` **refuses** to give the agent an unscoped real mailbox. Set `MAIL_SCOPE`, or use a paid key.
 **Verified live** (2026-10-25, real Gmail): the agent found only the `[CA-TEST]` seed thread. Tests cover search scoping, an out-of-scope thread refused, and an unscoped free-tier mailbox refused.
 **Interview angle.** "When the OAuth scope is too broad, add least privilege one layer up, at the query level."
+
+## ADR-049: Agent progress over Server-Sent Events (SSE)
+
+**Accepted** · 2026-10-25 · Phase 6
+
+**Context.** An agent run takes 5–10 s. A spinner with no feedback feels broken, and the steps themselves build trust ("Searching your mail → Reading the thread → Looking up your memories → Drafting").
+**Options.** (A) Polling `GET /actions/{id}`: simple, but laggy and chatty. (B) **SSE**: one HTTP response that stays open and streams `data: {json}` lines, server → client. (C) WebSockets: two-way, but needs more machinery than we need (the client never talks mid-run).
+**Decision.** B. `POST /loops/{id}/close/stream` runs the agent in a worker thread (with **its own SQLite connection**) that pushes `thinking / step / done / error` events into a queue, and the response drains it. Swift reads it with `URLSession.bytes(for:)` + `.lines` into an `AsyncThrowingStream`. The mailbox is resolved *before* the stream starts, so "Gmail not connected" is a clean 503, not a half-started run.
+**Tradeoff.** If the connection drops mid-run, the run still finishes server-side and the inbox picks up the draft on its next refresh ("resume pending drafts").
+
+## ADR-050: Inbox UI as a Minimi-style panel + dashboard + settings, with trust guards in the UI
+
+**Accepted** · 2026-10-25 · Phase 6
+
+**Decision.**
+- **Panel** (menu bar, with the open-loop count next to the icon), **dashboard** window (Inbox + Recent memories), **Settings** window (capture, what leaves your Mac, delete all data).
+- Loop cards show app icon · window · due badge, the title, who owes whom plus the *why*, the source quote, and **Close it for me** · Resolve · Not a loop. App filter chips. Closed loops say *how* they closed (you / inferred / agent), with a link to the sent email.
+- **Trust guards:** all model and screen text is rendered with `Text(verbatim:)` (no Markdown or link injection). **Approve & Send stays disabled while any `[[placeholder]]` remains.** Approve sends the hash of the displayed draft. Refused tool calls are shown ("refused by a guardrail"). Drafts awaiting approval are restored after an app restart.
+- Backend additions: `bundle_id`, `proof_url` and the last run on `/loops`; `GET /memories`; `POST /data/delete` (an exact confirmation phrase, then `VACUUM` so deleted text doesn't linger in the file); `agent_ready` / `agent_detail` on `/status` (checked locally, no network).
+- A fresh Gmail connection per run: Google's `httplib2` client isn't thread-safe.
+
+## ADR-051: Demo-ready flow: a live scope on the free tier, and ending the visit when you leave a window
+
+**Accepted** · 2026-10-25 · Phase 6 · refines ADR-027 and ADR-033
+
+**Context.** Your test feedback: the flow has to work like the demo, with no commands. Two of our choices blocked that. (1) On the free tier, live captures were held back unless you opted in, and the opt-in sent *everything* on screen. (2) A visit was processed only after 5 minutes of silence.
+**Decision.**
+1. **`LIVE_SCOPE='[CA-TEST]'`:** on the free tier, live episodes whose window title or text contains the marker are processed automatically. Every other capture stays on the Mac (held back). It's the capture-side twin of `MAIL_SCOPE`. Paid tier: everything is processed as before.
+2. **End of visit:** when you switch away from an app, the app calls `POST /visits/end`, and the brain closes that window's episode immediately, so the worker picks it up within ~2 s. The 5-minute gap stays as the fallback.
+3. The panel and dashboard refresh every 3 s while open, and show *"Checking what you just looked at…"* while episodes are pending.
+**Demo setup:** `.env` has `LLM_MODEL=gemini-3.5-flash-lite`, `MAIL_SCOPE='subject:"[CA-TEST]"'`, `LIVE_SCOPE='[CA-TEST]'`. Then just `make brain` + the app.
+**Tradeoff.** The scope is a subject or title convention, which suits a demo and is safe on the free tier. With a paid key, drop both scopes for real use.
+
+## ADR-052: Your call: remove the free-tier gating and both scopes, so every capture is processed
+
+**Accepted** · 2026-10-25 · supersedes ADR-027, ADR-048 and the live-scope part of ADR-051
+
+**Context.** The `[CA-TEST]` markers read as hard-coded and get in the way of a natural demo. You'll manage Gemini usage yourself, mainly for tomorrow's demo shoot.
+**Decision.** Removed `GEMINI_TIER`, `ALLOW_FREE_TIER_LIVE`, `LIVE_SCOPE`, `MAIL_SCOPE` and the `ScopedMailbox`. Every closed episode is processed. The agent sees your connected Gmail. Kept: the end-of-visit trigger (ADR-051), the app denylist, password-field skipping, redaction, and everything about sending (no send tool, recipients pinned to the thread, approval of the exact draft, verify in Sent).
+**Tradeoff, stated plainly.** On Gemini's free tier, text sent may be used by Google and reviewed by people. With the app running, that's every window you visit, and the agent's reads of your real inbox. The controls left are **pause capture** (panel toggle), **"Never capture <app>"**, and the built-in denylist. A paid key changes the data terms.
+**Kept as history** in ADR-027 / 048, including the reasoning, which is still a good interview story about data governance.
+
+## ADR-053: No thread means a new email, with recipients only from the loop's known contact or from you
+
+**Accepted** · 2026-10-25 · your design · amends ADR-012 / ADR-045
+
+**Context.** Commitments to email someone are made everywhere: WhatsApp ("kal mail kar dunga"), Notes, meetings. Reply-only meant "an email can't close this" for all of them.
+**Decision.** The agent's procedure is now: find the thread → reply in it. **No thread → `create_new_email`.** If the loop has the counterparty's address (seen on screen), it's pre-filled. If not, To is empty and the inbox asks you for it. `cannot_close` is now only for things an email can't do (reminders to yourself, tasks like reviewing code).
+**The security change, and why it's still safe.** "Recipients must be in the thread" was the prompt-injection guard, and a new email has no thread. Replacement:
+1. The **model** may address a new email **only** to the loop's known counterparty address, or leave it blank. Anything else is refused in code, so injected text can't choose a recipient.
+2. **You** can type any recipient, in the UI (validated), because you're the trusted party.
+3. A **reply's** recipients still can't be changed at approval.
+4. Nothing sends without Approve, and Approve stays disabled with no valid recipient or with `[[placeholders]]` left.
+5. **Right-person rule** (found by the eval): if the loop knows the counterparty's address, a thread only counts if that address is in it. A same-named person at another address is a different conversation, so the agent writes a new email instead.
+**Verify:** a new email counts as delivered when Gmail shows it as SENT (it starts its own thread). The proof link uses the sent message's thread.
+
+## ADR-054: Prompt rules that kept flaking became code: an authority verifier and a right-person check
+
+**Accepted** · 2026-10-25 · Phase 6 · extends ADR-043's generator + verifier pattern
+
+**Context.** After the new-email procedure made the prompt longer, the agent eval went 11/12 → 10/12 → 12/12. Flash-Lite followed two prompt rules less reliably: it **renewed the lease for you** in 2 of 3 runs, and **replied to a same-named stranger** in 1 of 3.
+**Decision.**
+1. **Right-person check (deterministic):** `create_draft` refuses a thread that doesn't include the loop's known counterparty address, and tells the model to use `create_new_email`.
+2. **Authority verifier (generator + verifier):** before any draft is saved, a narrow call asks one question: *does this draft decide, accept, decline, renew, agree to terms, pick times or commit the user to something new?* If yes, the save is refused, and the model must use a `[[placeholder]]` and list it in missing_info. Then the UI's placeholder guard blocks Approve.
+**Cost.** One small extra call per draft (about 1 s), on the behaviour that matters most to the pitch.
+**Interview angle.** "When a rule flaked in the eval, I moved it from the prompt into code. Deterministic where possible, a narrow verifier where it needs judgement."
+**Measured after the change** (real model, 3 runs): lease and wrong-person **fixed** (passed every run they ran in). New: the verifier **over-blocked** "confirm the PyCon talk slot" (2/2 runs lost the time). Confirming was the owed task, not a new decision. The verifier wording was tightened to block only decisions *beyond what's owed*. **Not yet re-measured:** run 3 hit the Flash-Lite daily quota (resets ~12:33 IST, 26 Oct).
 

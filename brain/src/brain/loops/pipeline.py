@@ -38,24 +38,12 @@ class DetectOutcome:
 
 
 def pending(conn: sqlite3.Connection, settings: Settings, limit: int | None = None) -> list[sqlite3.Row]:
-    """Closed, unprocessed episodes. Live captures only when the tier allows it (ADR-027)."""
+    """Closed, unprocessed episodes, oldest first (ADR-052: every capture is processed)."""
     with conn:
         episodes.close_stale(conn)
     sql = ("SELECT * FROM episodes WHERE closed_at IS NOT NULL AND processed_at IS NULL"
-           f" AND process_attempts < {MAX_ATTEMPTS}")
-    if not settings.live_detection_allowed:
-        sql += " AND source != 'capture'"
-    sql += " ORDER BY id" + (f" LIMIT {int(limit)}" if limit else "")
+           f" AND process_attempts < {MAX_ATTEMPTS} ORDER BY id" + (f" LIMIT {int(limit)}" if limit else ""))
     return conn.execute(sql).fetchall()
-
-
-def held_back(conn: sqlite3.Connection, settings: Settings) -> int:
-    """Live-capture episodes waiting because the free tier may not see real screen text (ADR-027)."""
-    if settings.live_detection_allowed:
-        return 0
-    return conn.execute(
-        "SELECT COUNT(*) FROM episodes WHERE processed_at IS NULL AND source = 'capture'"
-    ).fetchone()[0]
 
 
 def process(conn: sqlite3.Connection, llm: LLMClient, episode: sqlite3.Row, settings: Settings) -> DetectOutcome:

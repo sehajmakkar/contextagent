@@ -44,6 +44,13 @@ class ScriptedLLM:
     def answer(self, results):
         self.answers.append(results)
 
+    oversteps = False  # what the authority verifier answers
+
+    def generate_structured(self, *, schema, system, prompt, thinking_level):
+        from brain.agent.tools import AuthorityVerdict
+        return AuthorityVerdict(oversteps=self.oversteps, decision="renew the lease" if self.oversteps else ""), \
+            Usage("scripted", 50, 5, 0, 1)
+
 
 @pytest.fixture
 def setup(conn):
@@ -157,3 +164,107 @@ def test_reject_deletes_the_draft_and_reopens(setup):
     approval.reject(conn, mailbox, run.action_id, reason="wrong tone")
     assert mailbox.drafts == {} and mailbox.sent == []
     assert store.get_loop(conn, loop_id)["state"] == "open"
+
+
+def test_a_failed_send_can_be_retried(setup):
+    """Regression (live demo): a send error used to mark the run 'failed', so every later click got 409."""
+    conn, loop_id, mailbox, settings = setup
+    run = close_loop(conn, ScriptedLLM(HAPPY), mailbox, settings, loop_id)
+    real_send, calls = mailbox.send_draft, []
+
+    def flaky_send(draft_id):
+        calls.append(draft_id)
+        if len(calls) == 1:
+            from brain.mailbox.base import MailboxError
+            raise MailboxError("Gmail API error 503: backend error")
+        return real_send(draft_id)
+
+    mailbox.send_draft = flaky_send
+    with pytest.raises(approval.ApprovalError, match="try again"):
+        approval.approve(conn, mailbox, run.action_id, shown_hash=run.draft["draft_hash"])
+    assert store.get_loop(conn, loop_id)["state"] == "awaiting_approval" and mailbox.sent == []
+    result = approval.approve(conn, mailbox, run.action_id, shown_hash=run.draft["draft_hash"])
+    assert result.verified and len(mailbox.sent) == 1
+
+
+# --- new emails: the promise was made outside email (WhatsApp, Notes) ----------------------------------------
+
+def _whatsapp_loop(conn, email=None):
+    obs = ObservationIn(captured_at="2026-10-20T09:15:00+05:30", app_name="WhatsApp", bundle_id="net.whatsapp.WhatsApp",
+                        window_title="Rohan Gupta", text="haan kal mail kar dunga the DBMS notes")
+    with conn:
+        obs_id = store.insert_observation(conn, obs)
+        return store.create_loop(conn, observation_id=obs_id, evidence_quote="haan kal mail kar dunga the DBMS notes",
+                                 title="Email Rohan the DBMS notes", direction="i_owe", counterparty="Rohan Gupta",
+                                 counterparty_email=email, deliverable="DBMS notes", note="Promised on WhatsApp.",
+                                 due_date=date(2026, 10, 21), confidence=0.95)
+
+
+NEW_EMAIL = [
+    [call("mail_search", query="Rohan DBMS notes")],   # finds nothing in the mailbox
+    [call("create_new_email", subject="DBMS notes", body="Hi Rohan, here are the DBMS notes: [[attach notes]]")],
+    [call("finish", outcome="drafted", summary="New email; no thread existed.", missing_info=["recipient's email address"])],
+]
+
+
+def test_no_thread_means_a_new_email_that_waits_for_your_recipient(setup):
+    conn, _, mailbox, settings = setup
+    loop_id = _whatsapp_loop(conn)
+    run = close_loop(conn, ScriptedLLM(NEW_EMAIL), mailbox, settings, loop_id)
+    assert run.outcome == "drafted" and run.draft["kind"] == "new" and run.draft["to"] == []
+
+    with pytest.raises(approval.ApprovalError, match="Add a recipient"):
+        approval.approve(conn, mailbox, run.action_id, shown_hash=run.draft["draft_hash"])
+    with pytest.raises(approval.ApprovalError, match="valid email"):
+        approval.approve(conn, mailbox, run.action_id, shown_hash=run.draft["draft_hash"], edited_to=["rohan"])
+    result = approval.approve(conn, mailbox, run.action_id, shown_hash=run.draft["draft_hash"],
+                              edited_to=["rohan@college.example"], edited_body="Hi Rohan, notes attached!")
+    assert result.verified and mailbox.sent[0].to == ["rohan@college.example"]
+    assert store.get_loop(conn, loop_id)["state"] == "closed"
+
+
+def test_model_cannot_address_a_new_email_to_an_unknown_person(setup):
+    """No thread means no "people in the thread", so injected text must not be able to pick a recipient."""
+    conn, _, mailbox, settings = setup
+    loop_id = _whatsapp_loop(conn)
+    llm = ScriptedLLM([NEW_EMAIL[0], [call("create_new_email", to=["x@evil.example"], subject="s", body="b")], NEW_EMAIL[2]])
+    close_loop(conn, llm, mailbox, settings, loop_id)
+    assert "isn't this loop's known contact" in llm.answers[1][0][1]["error"]
+
+
+def test_a_known_counterparty_address_is_allowed(setup):
+    conn, _, mailbox, settings = setup
+    loop_id = _whatsapp_loop(conn, email="rohan@college.example")
+    script = [NEW_EMAIL[0], [call("create_new_email", to=["Rohan@College.example"], subject="DBMS notes", body="Hi Rohan")],
+              [call("finish", outcome="drafted", summary="New email to Rohan.")]]
+    run = close_loop(conn, ScriptedLLM(script), mailbox, settings, loop_id)
+    assert run.draft["to"] == ["rohan@college.example"]
+
+
+def test_reply_recipients_stay_pinned_at_approval(setup):
+    conn, loop_id, mailbox, settings = setup
+    run = close_loop(conn, ScriptedLLM(HAPPY), mailbox, settings, loop_id)
+    with pytest.raises(approval.ApprovalError, match="can't be changed"):
+        approval.approve(conn, mailbox, run.action_id, shown_hash=run.draft["draft_hash"], edited_to=["x@evil.example"])
+    assert mailbox.sent == []
+
+
+def test_the_authority_verifier_blocks_a_draft_that_decides_for_you(setup):
+    conn, loop_id, mailbox, settings = setup
+    llm = ScriptedLLM(HAPPY)
+    llm.oversteps = True
+    close_loop(conn, llm, mailbox, settings, loop_id)
+    assert "decides something only the user can" in llm.answers[2][0][1]["error"]
+    assert mailbox.drafts == {}  # nothing saved
+
+
+def test_a_thread_without_the_known_contact_is_refused(setup):
+    """Right person: the loop knows priya.sharma@…, so a thread with a same-named stranger doesn't count."""
+    conn, _, mailbox, settings = setup
+    loop_id = _whatsapp_loop(conn, email="rohan@college.example")
+    llm = ScriptedLLM([[call("mail_get_thread", thread_id="t-q3")],
+                       [call("create_draft", thread_id="t-q3", to=["priya.sharma@northwind.example"], subject="s", body="b")],
+                       NEW_EMAIL[2]])
+    close_loop(conn, llm, mailbox, settings, loop_id)
+    assert "doesn't include rohan@college.example" in llm.answers[1][0][1]["error"]
+

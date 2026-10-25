@@ -84,10 +84,18 @@ class GmailMailbox:
         created = self._call(self._s.drafts().create(userId="me", body=self._draft_body(thread_id, to, subject, body)))
         return Draft(id=created["id"], thread_id=thread_id, to=to, subject=subject, body=body)
 
-    def update_draft(self, draft_id: str, thread_id: str, to: list[str], subject: str, body: str) -> Draft:
+    def create_new_draft(self, to: list[str], subject: str, body: str) -> Draft:
+        """A fresh email, not a reply: no threadId, no In-Reply-To. Gmail starts a new thread for it."""
+        created = self._call(self._s.drafts().create(userId="me", body=self._draft_body(None, to, subject, body)))
+        return Draft(id=created["id"], thread_id=created["message"].get("threadId"), to=to, subject=subject,
+                     body=body, kind="new")
+
+    def update_draft(self, draft_id: str, thread_id: str | None, to: list[str], subject: str, body: str,
+                     kind: str = "reply") -> Draft:
+        reply_to = thread_id if kind == "reply" else None
         self._call(self._s.drafts().update(userId="me", id=draft_id,
-                                           body={"id": draft_id, **self._draft_body(thread_id, to, subject, body)}))
-        return Draft(id=draft_id, thread_id=thread_id, to=to, subject=subject, body=body)
+                                           body={"id": draft_id, **self._draft_body(reply_to, to, subject, body)}))
+        return Draft(id=draft_id, thread_id=thread_id, to=to, subject=subject, body=body, kind=kind)
 
     def get_draft(self, draft_id: str) -> Draft:
         d = self._call(self._s.drafts().get(userId="me", id=draft_id, format="full"))
@@ -106,17 +114,21 @@ class GmailMailbox:
     def get_message(self, message_id: str) -> MailMessage:
         return _message(self._call(self._s.messages().get(userId="me", id=message_id, format="full")))
 
-    def _draft_body(self, thread_id: str, to: list[str], subject: str, body: str) -> dict:
-        last = self.get_thread(thread_id)[-1]
+    def _draft_body(self, thread_id: str | None, to: list[str], subject: str, body: str) -> dict:
         msg = EmailMessage()
-        msg["To"] = ", ".join(to)
+        if to:  # a new email may wait for you to add the recipient
+            msg["To"] = ", ".join(to)
         msg["Subject"] = subject
-        if last.message_id_header:  # these headers make it a reply in the same conversation everywhere
-            msg["In-Reply-To"] = last.message_id_header
-            msg["References"] = last.message_id_header
+        if thread_id:
+            last = self.get_thread(thread_id)[-1]
+            if last.message_id_header:  # these headers make it a reply in the same conversation everywhere
+                msg["In-Reply-To"] = last.message_id_header
+                msg["References"] = last.message_id_header
         msg.set_content(body)
-        raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
-        return {"message": {"raw": raw, "threadId": thread_id}}
+        message = {"raw": base64.urlsafe_b64encode(msg.as_bytes()).decode()}
+        if thread_id:
+            message["threadId"] = thread_id
+        return {"message": message}
 
     @staticmethod
     def _call(request):
@@ -148,13 +160,6 @@ def _plain_text(payload: dict) -> str:
     return ""
 
 
-def open_mailbox(settings):
-    """The mailbox the agent uses: Gmail, narrowed by MAIL_SCOPE. On the free tier a scope is required (ADR-048)."""
-    from brain.mailbox.scoped import ScopedMailbox
-
-    if not settings.mail_scope and not settings.live_detection_allowed:
-        raise MailboxError("Free tier: the agent would send real email content to Gemini. Set MAIL_SCOPE to a Gmail "
-                           "filter for test threads (e.g. MAIL_SCOPE='subject:\"[CA-TEST]\"'), or use a paid key.")
-    box = GmailMailbox.connect()
-    return ScopedMailbox(box, settings.mail_scope) if settings.mail_scope else box
-
+def open_mailbox(settings) -> "GmailMailbox":
+    """The mailbox the agent uses: your connected Gmail."""
+    return GmailMailbox.connect()

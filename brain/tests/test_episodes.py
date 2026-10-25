@@ -76,7 +76,7 @@ class StubLLM:
 def test_pipeline_stores_grounded_memories_and_loops_with_provenance(conn):
     ingest(conn, _obs(ASK), "file")
     reply = ingest(conn, _obs(f"{ASK}\n{REPLY}", minutes=1), "file")
-    settings = Settings(gemini_tier="free")
+    settings = Settings()
     [ep] = pipeline.pending(conn, settings)  # fixture dates are in the past, so the episode closes
 
     outcome = pipeline.process(conn, StubLLM(), ep, settings)
@@ -98,11 +98,9 @@ def test_local_gate_skips_tiny_episodes_without_an_llm_call(conn):
     assert outcome.skipped == "too little text"
 
 
-def test_live_capture_episodes_are_held_back_on_the_free_tier(conn):
+def test_live_captures_are_processed_like_any_other(conn):
     ingest(conn, _obs(f"{ASK}\n{REPLY}", minutes=-60), "capture")
-    free = Settings(gemini_tier="free", allow_free_tier_live=False)
-    assert pipeline.pending(conn, free) == [] and pipeline.held_back(conn, free) == 1
-    assert len(pipeline.pending(conn, Settings(gemini_tier="paid"))) == 1
+    assert len(pipeline.pending(conn, Settings())) == 1
 
 
 def test_retention_erases_only_old_processed_snapshots(conn):

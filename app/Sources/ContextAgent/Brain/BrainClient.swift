@@ -15,7 +15,7 @@ struct BrainClient: Sendable {
         var errorDescription: String? {
             switch self {
             case .noToken: "No token yet: start the brain with `make brain`"
-            case let .http(code, body): "Brain returned \(code): \(body.prefix(120))"
+            case let .http(code, body): code == 0 ? "Brain not reachable" : "\(body.prefix(160)) (\(code))"
             }
         }
     }
@@ -42,14 +42,13 @@ struct BrainClient: Sendable {
     }
 
     struct Status: Decodable, Sendable {
-        let tier: String
-        let liveDetectionAllowed: Bool
         let autoDetectRunning: Bool
         let captured: Int
         let pending: Int
-        let heldBack: Int
         let openLoops: Int
         let lastError: String?
+        let agentReady: Bool
+        let agentDetail: String
     }
 
     func post(_ snapshot: WindowSnapshot, trigger: String, capturedAt: Date = .now) async throws -> IngestResponse {
@@ -76,6 +75,91 @@ struct BrainClient: Sendable {
         return formatter.string(from: date)
     }
 
+    // MARK: - Inbox (Phase 6)
+
+    func loops(state: String = "open") async throws -> [Loop] {
+        var request = try authorized("loops")
+        request.url = request.url?.appending(queryItems: [URLQueryItem(name: "state", value: state)])
+        return try await send(request)
+    }
+
+    func memories(limit: Int = 20) async throws -> [Memory] {
+        var request = try authorized("memories")
+        request.url = request.url?.appending(queryItems: [URLQueryItem(name: "limit", value: String(limit))])
+        return try await send(request)
+    }
+
+    func action(_ id: Int) async throws -> AgentAction {
+        try await send(try authorized("actions/\(id)"))
+    }
+
+    func transition(loopID: Int, to state: String, reason: String) async throws {
+        let _: Loop = try await send(try json(post: "loops/\(loopID)/transition", ["to": state, "reason": reason]))
+    }
+
+    func approve(actionID: Int, draftHash: String, editedBody: String?, to: [String]?) async throws -> AgentAction {
+        struct Body: Encodable {
+            let draft_hash: String
+            let body: String?
+            let to: [String]?
+        }
+        var request = try authorized("actions/\(actionID)/approve")
+        request.httpMethod = "POST"
+        request.timeoutInterval = 60
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(Body(draft_hash: draftHash, body: editedBody, to: to))
+        return try await send(request)
+    }
+
+    func reject(actionID: Int, reason: String) async throws -> AgentAction {
+        try await send(try json(post: "actions/\(actionID)/reject", ["reason": reason]))
+    }
+
+    /// You switched away from this window: the brain processes the visit now instead of in 5 minutes (ADR-051).
+    func endVisit(bundleID: String, windowTitle: String) async throws {
+        let _: [String: Int?] = try await send(try json(post: "visits/end", ["bundle_id": bundleID, "window_title": windowTitle]))
+    }
+
+    func deleteAllData() async throws {
+        let _: [String: [String: Int]] = try await send(try json(post: "data/delete", ["confirm": "delete everything"]))
+    }
+
+    /// "Close it for me", streamed: Server-Sent Events, one `data: {json}` line per agent step (ADR-049).
+    func closeStream(loopID: Int) -> AsyncThrowingStream<AgentEvent, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    var request = try authorized("loops/\(loopID)/close/stream")
+                    request.httpMethod = "POST"
+                    request.timeoutInterval = 180  // an agent run takes seconds; give slow networks room
+                    let (bytes, response) = try await URLSession.shared.bytes(for: request)
+                    let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+                    if code != 200 {
+                        var detail = ""
+                        for try await line in bytes.lines { detail += line }
+                        throw BrainError.http(code, SSE.detail(fromErrorBody: detail))
+                    }
+                    for try await line in bytes.lines {
+                        if let event = SSE.event(from: line) { continuation.yield(event) }
+                    }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    private func json(post path: String, _ body: [String: String], timeout: TimeInterval = 10) throws -> URLRequest {
+        var request = try authorized(path)
+        request.httpMethod = "POST"
+        request.timeoutInterval = timeout
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(body)
+        return request
+    }
+
     private func authorized(_ path: String) throws -> URLRequest {
         guard let token = try? String(contentsOf: Self.tokenURL, encoding: .utf8) else { throw BrainError.noToken }
         var request = URLRequest(url: baseURL.appending(path: path), timeoutInterval: 5)
@@ -86,7 +170,9 @@ struct BrainClient: Sendable {
     private func send<T: Decodable>(_ request: URLRequest) async throws -> T {
         let (data, response) = try await URLSession.shared.data(for: request)
         let code = (response as? HTTPURLResponse)?.statusCode ?? 0
-        guard code == 200 else { throw BrainError.http(code, String(decoding: data, as: UTF8.self)) }
+        guard code == 200 else {
+            throw BrainError.http(code, SSE.detail(fromErrorBody: String(decoding: data, as: UTF8.self)))
+        }
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         return try decoder.decode(T.self, from: data)

@@ -52,6 +52,17 @@ def backfill(conn: sqlite3.Connection) -> int:
     return len(ids)
 
 
+def end_visit(conn: sqlite3.Connection, bundle_id: str, window_title: str) -> int | None:
+    """The app saw you leave this window: the visit is over, so close its episode now instead of waiting
+    EPISODE_GAP. That's what makes a loop appear seconds after you switch away (ADR-051)."""
+    row = conn.execute("""SELECT id FROM episodes WHERE bundle_id = ? AND window_title = ? AND source = 'capture'
+                          AND closed_at IS NULL ORDER BY id DESC LIMIT 1""", (bundle_id, window_title)).fetchone()
+    if row:
+        conn.execute("UPDATE episodes SET closed_at = ? WHERE id = ?", (now(), row["id"]))
+        return row["id"]
+    return None
+
+
 def close_stale(conn: sqlite3.Connection, current: datetime | None = None) -> int:
     """Close episodes whose window hasn't produced a snapshot for EPISODE_GAP. Returns how many closed."""
     current = current or datetime.now().astimezone()

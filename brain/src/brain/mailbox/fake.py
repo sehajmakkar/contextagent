@@ -52,8 +52,16 @@ class FakeMailbox:
         self.drafts[draft.id] = draft
         return draft
 
-    def update_draft(self, draft_id: str, thread_id: str, to: list[str], subject: str, body: str) -> Draft:
-        draft = replace(self.get_draft(draft_id), thread_id=thread_id, to=to, subject=subject, body=body)
+    def create_new_draft(self, to: list[str], subject: str, body: str) -> Draft:
+        n = next(self._ids)
+        draft = Draft(id=f"d{n}", thread_id=f"new-{n}", to=to, subject=subject, body=body, kind="new")
+        self.drafts[draft.id] = draft
+        return draft
+
+    def update_draft(self, draft_id: str, thread_id: str | None, to: list[str], subject: str, body: str,
+                     kind: str = "reply") -> Draft:
+        old = self.get_draft(draft_id)
+        draft = replace(old, thread_id=thread_id or old.thread_id, to=to, subject=subject, body=body, kind=kind)
         self.drafts[draft_id] = draft
         return draft
 
@@ -71,7 +79,7 @@ class FakeMailbox:
             raise MailboxError(f"no draft {draft_id}")
         message = MailMessage(id=f"sent-{next(self._ids)}", thread_id=draft.thread_id, sender=self.account,
                               to=draft.to, cc=[], date="now", subject=draft.subject, body=draft.body, labels=["SENT"])
-        self.threads[draft.thread_id].append(message)
+        self.threads.setdefault(draft.thread_id, []).append(message)
         self.sent.append(message)
         return message.id
 

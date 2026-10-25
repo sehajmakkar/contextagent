@@ -35,12 +35,12 @@ def test_detection_schema_uses_supported_json_schema_features():
 
 @pytest.mark.live
 def test_live_detects_the_demo_loop(conn, demo_observations):
-    from brain.config import get_settings
+    from brain.config import REPO_ROOT, Settings
     from brain.db import store
     from brain.llm.client import LLMClient
     from brain.loops.detect import detect_loops
 
-    s = get_settings()
+    s = Settings(_env_file=REPO_ROOT / ".env")  # the one test that deliberately reads your real key
     if not s.gemini_api_key:
         pytest.skip("GEMINI_API_KEY not set")
     obs_id = store.insert_observation(conn, demo_observations[0])
