@@ -4,7 +4,6 @@ from datetime import date
 
 import pytest
 
-from brain.agent.draft import EmailDraft, _only_known_recipients
 from brain.loops.detect import Detection, LoopCandidate, _keep
 
 SOURCE = "Priya Sharma <priya.sharma@northwind.example>\nSure, will send them over by Wednesday.\nReply"
@@ -27,13 +26,6 @@ def test_low_confidence_is_dropped():
 
 def test_paraphrased_quote_is_dropped():
     assert not _keep(_candidate(evidence_quote="I'll send the numbers Wednesday"), SOURCE)
-
-
-def test_recipients_outside_the_thread_are_removed():
-    draft = EmailDraft(to=["priya.sharma@northwind.example", "x@evil.example"], subject="Re: Q3",
-                       body="Hi", missing_info=[])
-    kept, removed = _only_known_recipients(draft, SOURCE)
-    assert kept.to == ["priya.sharma@northwind.example"] and removed == ["x@evil.example"]
 
 
 def test_detection_schema_uses_supported_json_schema_features():

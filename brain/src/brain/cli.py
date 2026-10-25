@@ -13,7 +13,11 @@ from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 
-from brain.agent.draft import draft_reply
+from brain.agent import approval
+from brain.agent.loop import close_loop
+from brain.mailbox import gmail
+from brain.mailbox.base import MailboxError
+from brain.mailbox.gmail import GmailMailbox, open_mailbox
 from brain.config import get_settings
 from brain.db import store
 from brain import episodes, retention
@@ -353,42 +357,105 @@ def history(loop_id: int) -> None:
                       f"[cyan]{h['actor']}[/]{conf}  {_e(h['reason'])}")
 
 
+def _mailbox():
+    try:
+        return open_mailbox(get_settings())
+    except MailboxError as e:
+        console.print(f"[red]{_e(e)}[/]")
+        raise typer.Exit(1)
+
+
+def _show_draft(draft: dict, title: str) -> None:
+    console.print(Panel(f"[bold]To:[/] {_e(', '.join(draft['to']))}\n[bold]Subject:[/] {_e(draft['subject'])}\n\n"
+                        f"{_e(draft['body'])}", title=title, subtitle="not sent"))
+
+
 @app.command()
 def close(loop_id: int) -> None:
-    """Draft the email that would close this loop (nothing is sent)."""
-    s = get_settings()
-    conn = _db()
-    loop = store.get_loop(conn, loop_id)
-    if not loop:
+    """"Close it for me": the agent finds the thread, gathers facts, and drafts the reply. Nothing is sent."""
+    conn, s = _db(), get_settings()
+    if not store.get_loop(conn, loop_id):
         console.print(f"[red]No loop #{loop_id}[/]")
         raise typer.Exit(1)
-    evidence = store.get_evidence(conn, loop_id)
-    with console.status("Drafting…"):
+    mailbox = _mailbox()
+    with console.status("Agent working…"):
         try:
-            draft, removed, usage = draft_reply(_llm(), loop, evidence, name=s.user_name, email=s.user_email)
-        except LLMError as e:
-            console.print(f"[red]Drafting failed:[/] {_e(e)}")
+            run = close_loop(conn, _llm(), mailbox, s, loop_id)
+        except lifecycle.InvalidTransition as e:
+            console.print(f"[red]{_e(e)}[/]")
             raise typer.Exit(1)
+    for st in run.steps:
+        mark = {"ok": "[green]✓[/]", "refused": "[red]✗ refused[/]", "error": "[yellow]! error[/]"}[st["status"]]
+        console.print(f"  {mark} {st['tool']}")
+    console.print(f"[bold]{run.outcome}[/]: {_e(run.summary)}")
+    if run.draft:
+        _show_draft(run.draft, f"Draft for loop #{loop_id} · action #{run.action_id}")
+        if run.missing_info:
+            console.print("[yellow]Add before sending:[/] " + _e("; ".join(run.missing_info)))
+        console.print(f"Review it, then: [bold]brain approve {run.action_id}[/] (or reject {run.action_id})")
+    _print_usage(run.usages)
 
-    with conn:
-        action_id = store.log_action(
-            conn, loop_id=loop_id, kind="draft_reply", status="drafted",
-            input={"loop_id": loop_id, "observation_ids": [e["observation_id"] for e in evidence]},
-            output=draft.model_dump(), model=usage.model,
-            prompt_tokens=usage.prompt_tokens, output_tokens=usage.output_tokens,
-            thinking_tokens=usage.thinking_tokens,
-        )
 
-    console.print(Panel(
-        f"[bold]To:[/] {_e(', '.join(draft.to)) or '[red](no known recipient)[/]'}\n"
-        f"[bold]Subject:[/] {_e(draft.subject)}\n\n{_e(draft.body)}",
-        title=f"Draft for loop #{loop_id} · action #{action_id}", subtitle="not sent",
-    ))
-    if draft.missing_info:
-        console.print("[yellow]Needs info the agent doesn't have yet:[/] " + _e("; ".join(draft.missing_info)))
-    if removed:
-        console.print(f"[red]Removed recipients not found in the thread:[/] {_e(', '.join(removed))}")
-    _print_usage([usage])
+@app.command()
+def approve(action_id: int, edit: bool = typer.Option(False, "--edit", help="Edit the body before sending.")) -> None:
+    """Send the agent's draft: your explicit approval is the only way an email leaves (ADR-012)."""
+    conn = _db()
+    row = conn.execute("SELECT output_json, status FROM actions WHERE id = ? AND kind = 'agent_run'", (action_id,)).fetchone()
+    if not row or row["status"] != "awaiting_approval":
+        console.print(f"[red]Action #{action_id} isn't awaiting approval.[/]")
+        raise typer.Exit(1)
+    draft = json.loads(row["output_json"])["draft"]
+    _show_draft(draft, f"Action #{action_id}")
+    body = typer.edit(draft["body"]) if edit else None
+    if not typer.confirm("Send this email?", default=False):
+        raise typer.Exit(0)
+    try:
+        result = approval.approve(conn, _mailbox(), action_id, shown_hash=draft["draft_hash"], edited_body=body)
+    except approval.ApprovalError as e:
+        console.print(f"[red]{_e(e)}[/]")
+        raise typer.Exit(1)
+    console.print(f"Sent (message {result.message_id}). "
+                  + ("[green]Confirmed in Sent; loop closed.[/]" if result.verified else "[yellow]Couldn't confirm it in Sent.[/]"))
+
+
+@app.command()
+def reject(action_id: int, reason: str = typer.Option("rejected", help="Why.")) -> None:
+    """Discard the agent's draft (deleted from Gmail) and reopen the loop."""
+    try:
+        approval.reject(_db(), _mailbox(), action_id, reason)
+    except approval.ApprovalError as e:
+        console.print(f"[red]{_e(e)}[/]")
+        raise typer.Exit(1)
+    console.print(f"Rejected action #{action_id}; the loop is open again.")
+
+
+@app.command(name="gmail-login")
+def gmail_login() -> None:
+    """Connect Gmail once (browser consent). The token is stored in your macOS Keychain, not in a file."""
+    try:
+        console.print(f"Connected as [bold]{gmail.login(get_settings().gmail_client_secrets)}[/].")
+    except MailboxError as e:
+        console.print(f"[red]{_e(e)}[/]")
+        raise typer.Exit(1)
+
+
+@app.command(name="gmail-status")
+def gmail_status() -> None:
+    """Which Gmail account the agent would use, and what it may see."""
+    try:
+        account = GmailMailbox.connect().account
+    except MailboxError as e:
+        console.print(f"[red]{_e(e)}[/]")
+        raise typer.Exit(1)
+    scope = get_settings().mail_scope
+    console.print(f"Connected as [bold]{account}[/]. Agent scope: {_e(scope) if scope else '[yellow]whole mailbox[/]'}")
+
+
+@app.command(name="gmail-logout")
+def gmail_logout() -> None:
+    """Forget the Gmail token (removes it from the Keychain)."""
+    gmail.logout()
+    console.print("Gmail token removed from the Keychain.")
 
 
 @app.command()

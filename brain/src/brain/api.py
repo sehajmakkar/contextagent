@@ -6,6 +6,7 @@ Two guards, because any web page you visit can also send requests to localhost:
 """
 
 import hmac
+import json
 import logging
 import secrets
 import sqlite3
@@ -18,11 +19,16 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from pydantic import BaseModel
 
+from brain.agent import approval
+from brain.agent.loop import close_loop
 from brain.config import Settings, get_settings
 from brain.db import store
 from brain.ingest import ingest
 from brain.loops import lifecycle, pipeline
 from brain.loops.worker import DetectionWorker
+from brain.llm.client import LLMClient
+from brain.mailbox.base import MailboxError
+from brain.mailbox.gmail import open_mailbox
 from brain.models import ObservationIn
 
 log = logging.getLogger(__name__)
@@ -170,4 +176,82 @@ def transition_loop(loop_id: int, body: TransitionIn, conn: sqlite3.Connection =
     except lifecycle.InvalidTransition as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
     return next(item for item in list_loops("all", conn) if item.id == loop_id)
+
+
+# --- "Close it for me" (Phase 5) ----------------------------------------------
+
+def mailbox(request: Request):
+    """Gmail, connected once and reused. Tests swap in a FakeMailbox via app.state.mailbox."""
+    if getattr(request.app.state, "mailbox", None) is None:
+        try:
+            request.app.state.mailbox = open_mailbox(get_settings())
+        except MailboxError as e:
+            raise HTTPException(status_code=503, detail=str(e)) from e
+    return request.app.state.mailbox
+
+
+class ActionOut(BaseModel):
+    id: int
+    loop_id: int | None
+    status: str
+    outcome: str | None
+    summary: str | None
+    draft: dict | None
+    missing_info: list[str]
+    steps: list[dict]
+
+
+class ApproveIn(BaseModel):
+    draft_hash: str          # hash of the draft the UI displayed: approve exactly what was seen
+    body: str | None = None  # the body as edited in the UI, if changed
+
+
+class RejectIn(BaseModel):
+    reason: str = "rejected in the inbox"
+
+
+def _action_out(conn: sqlite3.Connection, action_id: int) -> ActionOut:
+    row = conn.execute("SELECT * FROM actions WHERE id = ? AND kind = 'agent_run'", (action_id,)).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"no agent run #{action_id}")
+    out = json.loads(row["output_json"] or "{}")
+    return ActionOut(id=row["id"], loop_id=row["loop_id"], status=row["status"], outcome=out.get("outcome"),
+                     summary=out.get("summary"), draft=out.get("draft"), missing_info=out.get("missing_info", []),
+                     steps=out.get("steps", []))
+
+
+@app.post("/loops/{loop_id}/close", response_model=ActionOut, dependencies=[Depends(require_token)])
+def close_loop_endpoint(loop_id: int, request: Request, conn: sqlite3.Connection = Depends(db)) -> ActionOut:
+    """Run the agent on one loop. It drafts at most; the result waits for /actions/{id}/approve."""
+    settings = get_settings()
+    llm = LLMClient(settings.gemini_api_key.get_secret_value(), settings.llm_model)
+    try:
+        run = close_loop(conn, llm, mailbox(request), settings, loop_id)
+    except lifecycle.InvalidTransition as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+    return _action_out(conn, run.action_id)
+
+
+@app.get("/actions/{action_id}", response_model=ActionOut, dependencies=[Depends(require_token)])
+def get_action(action_id: int, conn: sqlite3.Connection = Depends(db)) -> ActionOut:
+    return _action_out(conn, action_id)
+
+
+@app.post("/actions/{action_id}/approve", response_model=ActionOut, dependencies=[Depends(require_token)])
+def approve_action(action_id: int, body: ApproveIn, request: Request, conn: sqlite3.Connection = Depends(db)) -> ActionOut:
+    """The only route that sends email, and only for the draft the user saw (ADR-012, ADR-046)."""
+    try:
+        approval.approve(conn, mailbox(request), action_id, shown_hash=body.draft_hash, edited_body=body.body)
+    except approval.ApprovalError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+    return _action_out(conn, action_id)
+
+
+@app.post("/actions/{action_id}/reject", response_model=ActionOut, dependencies=[Depends(require_token)])
+def reject_action(action_id: int, body: RejectIn, request: Request, conn: sqlite3.Connection = Depends(db)) -> ActionOut:
+    try:
+        approval.reject(conn, mailbox(request), action_id, body.reason)
+    except approval.ApprovalError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+    return _action_out(conn, action_id)
 

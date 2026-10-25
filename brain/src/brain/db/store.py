@@ -231,13 +231,24 @@ def insert_memory(conn: sqlite3.Connection, *, episode_id: int, observation_id: 
 def log_action(conn: sqlite3.Connection, *, loop_id: int | None, kind: str, status: str,
                input: dict, output: dict | None, model: str | None = None,
                prompt_tokens: int | None = None, output_tokens: int | None = None,
-               thinking_tokens: int | None = None) -> int:
+               thinking_tokens: int | None = None, parent_id: int | None = None) -> int:
+    ts = now()
     cur = conn.execute(
         """INSERT INTO actions (loop_id, kind, status, input_json, output_json, model,
-                                prompt_tokens, output_tokens, thinking_tokens, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                                prompt_tokens, output_tokens, thinking_tokens, parent_id, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (loop_id, kind, status, json.dumps(input, default=str),
          json.dumps(output, default=str) if output is not None else None,
-         model, prompt_tokens, output_tokens, thinking_tokens, now()),
+         model, prompt_tokens, output_tokens, thinking_tokens, parent_id, ts, ts),
     )
     return cur.lastrowid
+
+
+def update_action(conn: sqlite3.Connection, action_id: int, *, status: str, output: dict) -> None:
+    conn.execute(
+        """UPDATE actions SET status = ?, output_json = ?, updated_at = ?,
+               prompt_tokens = COALESCE(?, prompt_tokens), output_tokens = COALESCE(?, output_tokens),
+               thinking_tokens = COALESCE(?, thinking_tokens) WHERE id = ?""",
+        (status, json.dumps(output, default=str), now(), output.get("prompt_tokens"), output.get("output_tokens"),
+         output.get("thinking_tokens"), action_id),
+    )

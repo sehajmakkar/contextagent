@@ -49,6 +49,28 @@ def quota_info(details: object) -> tuple[bool, float | None]:
 
 
 @dataclass(frozen=True)
+class ToolSpec:
+    """A tool the model may call: provider-neutral (the agent never sees Gemini types)."""
+    name: str
+    description: str
+    parameters: dict  # JSON Schema
+
+
+@dataclass(frozen=True)
+class ToolCall:
+    id: str | None
+    name: str
+    args: dict
+
+
+@dataclass(frozen=True)
+class Step:
+    calls: list[ToolCall]
+    text: str
+    usage: "Usage"
+
+
+@dataclass(frozen=True)
 class Usage:
     model: str
     prompt_tokens: int
@@ -104,6 +126,9 @@ class LLMClient:
         except ValidationError as e:
             raise LLMError(f"Reply did not match {schema.__name__}: {e}") from e
 
+    def conversation(self, *, system: str, tools: list[ToolSpec], thinking_level: ThinkingLevel) -> "Conversation":
+        return Conversation(self, system, tools, thinking_level)
+
     def embed(self, text: str, *, model: str, dims: int) -> list[float]:
         """One text → one vector. (gemini-embedding-2 merges a *list* of inputs into one vector, so never batch.)"""
         def call():
@@ -141,3 +166,50 @@ class LLMClient:
             thinking_tokens=(meta and meta.thoughts_token_count) or 0,
             latency_ms=int((time.perf_counter() - start) * 1000),
         )
+
+
+class Conversation:
+    """A stateless-API agent conversation (ADR-021, ADR-045). We hold the history locally and resend it each turn.
+
+    The model's turns are appended exactly as received: with thinking on, they carry thought signatures that
+    must come back unchanged, or the model loses its reasoning chain between steps.
+    """
+
+    def __init__(self, llm: LLMClient, system: str, tools: list[ToolSpec], thinking_level: ThinkingLevel) -> None:
+        self._llm = llm
+        self._contents: list[types.Content] = []
+        self._config = types.GenerateContentConfig(
+            system_instruction=system,
+            tools=[types.Tool(function_declarations=[
+                types.FunctionDeclaration(name=t.name, description=t.description, parameters_json_schema=t.parameters)
+                for t in tools])],
+            tool_config=types.ToolConfig(function_calling_config=types.FunctionCallingConfig(mode="AUTO")),
+            thinking_config=types.ThinkingConfig(thinking_level=thinking_level),
+            automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),  # we run every tool
+            store=False,
+        )
+
+    def say(self, text: str) -> None:
+        self._contents.append(types.Content(role="user", parts=[types.Part(text=text)]))
+
+    def step(self) -> Step:
+        start = time.perf_counter()
+        llm = self._llm
+        response = llm._with_rate_limits(
+            lambda: llm._client.models.generate_content(model=llm.model, contents=self._contents, config=self._config),
+            llm.model)
+        candidate = response.candidates[0] if response.candidates else None
+        if candidate is None or candidate.content is None or candidate.finish_reason != types.FinishReason.STOP:
+            reason = candidate.finish_reason if candidate else response.prompt_feedback
+            raise LLMError(f"Gemini did not finish normally: {reason}")
+        self._contents.append(candidate.content)  # as received, thought signatures included
+        calls = [ToolCall(id=c.id, name=c.name, args=dict(c.args or {})) for c in (response.function_calls or [])]
+        text = "".join(p.text for p in candidate.content.parts or [] if p.text and not p.thought)
+        return Step(calls=calls, text=text, usage=llm._usage(response, start))
+
+    def answer(self, results: list[tuple[ToolCall, dict]]) -> None:
+        """All results of one step go back together, in one user turn (like the SDK's own loop)."""
+        self._contents.append(types.Content(role="user", parts=[
+            types.Part(function_response=types.FunctionResponse(id=call.id, name=call.name, response=result))
+            for call, result in results]))
+

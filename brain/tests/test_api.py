@@ -77,3 +77,33 @@ def test_inbox_lists_and_resolves_loops(client):
     # dismissing a closed loop isn't an allowed transition: 409, state unchanged
     assert client.post(f"/loops/{loop['id']}/transition", json={"to": "dismissed"}, headers=h).status_code == 409
 
+
+def test_approval_endpoint_needs_the_shown_hash_and_sends_once(client):
+    """End to end through HTTP with a scripted agent and a fake mailbox."""
+    from brain.agent.loop import close_loop
+    from brain.api import app
+    from brain.mailbox.fake import FakeMailbox
+    from tests.test_agent import HAPPY, ME, THREAD, ScriptedLLM
+
+    from datetime import date
+    from brain.db import store
+    from brain.models import ObservationIn
+    conn = store.connect(get_settings().db_path)
+    with conn:
+        obs_id = store.insert_observation(conn, ObservationIn(**{**OBS, "text": "Sure, will send them over by Wednesday."}))
+        loop_id = store.create_loop(conn, observation_id=obs_id, evidence_quote="Sure, will send them over by Wednesday.",
+                                    title="Send Priya the Q3 numbers", direction="i_owe", counterparty="Priya Sharma",
+                                    deliverable="Q3 numbers", note="n", due_date=date(2026, 10, 21), confidence=0.9)
+    fake = FakeMailbox.from_spec(ME, THREAD)
+    app.state.mailbox = fake
+    run = close_loop(conn, ScriptedLLM(HAPPY), fake, get_settings(), loop_id)
+    h = {"X-Brain-Token": client.token}
+
+    assert client.get(f"/actions/{run.action_id}", headers=h).json()["status"] == "awaiting_approval"
+    assert client.post(f"/actions/{run.action_id}/approve", json={"draft_hash": "stale"}, headers=h).status_code == 409
+    ok = client.post(f"/actions/{run.action_id}/approve", json={"draft_hash": run.draft["draft_hash"]}, headers=h)
+    assert ok.status_code == 200 and ok.json()["status"] == "sent"
+    assert client.post(f"/actions/{run.action_id}/approve", json={"draft_hash": run.draft["draft_hash"]}, headers=h).status_code == 409
+    assert len(fake.sent) == 1
+    app.state.mailbox = None
+

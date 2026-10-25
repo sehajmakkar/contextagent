@@ -66,6 +66,11 @@ Interview angle: the one-sentence answer to "why?"
 | 041 | Loop analysis v2: one call finds new loops and updates tracked ones; self-reminders; semantic dedupe with a judge | **Accepted** |
 | 042 | Model per stage (free tier): Flash-Lite everywhere; 3.8 Flash is the measured upgrade for loop analysis | **Accepted** |
 | 043 | Generator + verifier for closes; judge threshold calibrated at 0.14 | **Accepted** |
+| 044 | Gmail via google-api-python-client; scopes readonly + compose; OAuth token in the macOS Keychain | **Accepted** |
+| 045 | The agent: hand-written loop, provider-neutral tool types, risk-classed tools with guardrails in code, no send tool | **Accepted** |
+| 046 | Approval protocol: approve the hash you saw, claim-once, send, then verify in Sent before closing | **Accepted** |
+| 047 | FakeMailbox pulled forward from Phase 7 for tests and agent evals | **Accepted** (amends 024) |
+| 048 | Scoped mailbox: a fixed Gmail filter on every agent search; required on the free tier | **Accepted** |
 
 ---
 
@@ -521,4 +526,52 @@ Query embedding (network) p50 605 ms. Search itself is under 1 ms locally.
 **Decision.** Every proposed close goes to [verify.py](brain/src/brain/loops/verify.py), one narrow yes/no call: "does this text show *this exact deliverable* was delivered, or cancelled by the person owed?" Only verified closes happen. Measured: Contoso + NDA email → `false` ("a signed NDA, not the countersigned renewal"). Positive control, "Send Jordan the signed NDA" + the same email → `true`. No real close was vetoed in either eval set (5/5, 1/1).
 **Judge threshold.** Paraphrases of the same loop: 0.022 / 0.041 / 0.105. Closest *different* loops: 0.164 / 0.182 / 0.198 (37 of 55 different pairs were under the original 0.30). So the threshold is 0.14, with at most 2 judge calls per new loop. Calls per fixture run dropped from 92 to 67.
 **Interview angle.** "The riskiest action gets its own narrow verifier. Generation is broad, verification is specific."
+
+## ADR-044: Gmail via google-api-python-client, scopes readonly + compose, OAuth token in the macOS Keychain
+
+**Accepted** · 2026-10-25 · Phase 5 · refines ADR-013
+
+**Decision.** `google-api-python-client` + `google-auth-oauthlib` (installed-app flow: a browser consent screen once, `brain gmail-login`). Scopes: `gmail.readonly` (read threads) + `gmail.compose` (drafts). The refresh token is stored with `keyring` in the **macOS Keychain** (service `ContextAgent`), never in a file. Access tokens refresh automatically. Replies set `threadId` **and** `In-Reply-To` / `References` to the last message's `Message-ID`, so they thread for the recipient too (tested against canned API responses).
+**Key limitation.** `gmail.compose` also allows **sending**. Google has no "drafts only" scope. So the guarantee "the model can't send" can't come from OAuth, and comes from our architecture instead (ADR-045, ADR-046).
+**Tradeoffs.** Three new dependencies. The Google Cloud app is in "testing" mode (only your test accounts can log in), which is fine for a prototype.
+
+## ADR-045: The agent: hand-written loop, provider-neutral tool types, risk-classed tools with guardrails in code, and no send tool
+
+**Accepted** · 2026-10-25 · Phase 5 · implements ADR-011, ADR-012, ADR-026
+
+**Decision.**
+- **Loop** ([agent/loop.py](brain/src/brain/agent/loop.py)): model turn → validate and run each tool call → send all results back in one user turn → repeat until `finish`. Budgets: 10 turns, 80k tokens, plus one nudge if the model stops without calling `finish`. A failed run reopens the loop and **deletes any draft**, so no stray drafts are left in Gmail.
+- **Provider-neutral:** the agent sees our `ToolSpec / ToolCall / Step`. Only `llm/client.py` knows Gemini. Its `Conversation` appends each model turn **exactly as received** (thought signatures intact), and returns tool results as `Content(role="user", parts=[function_response…])`, the same as the SDK's own loop.
+- **Tools** ([agent/tools.py](brain/src/brain/agent/tools.py)): `search_memory`, `mail_search`, `mail_get_thread` (read), `create_draft` (draft), `finish`. Arguments are validated with Pydantic before running. Results from email or memory are labelled `untrusted_*`.
+- **Guardrails in code:** recipients must already be in the thread; no drafting into a thread the agent hasn't read; one draft per run; `finish(drafted)` requires a draft. There are no `execute` tools, and an `assert` enforces it.
+- **Audit:** one `agent_run` action, with a child row per tool call (`ok | refused | error`).
+- **Authority rule** (added after the eval caught an overstep, challenge #23): never accept, renew, agree to terms or pick times for the user, and use a `[[placeholder]]` instead.
+
+## ADR-046: Approval protocol: approve the hash you saw, claim once, send, then verify in Sent before closing
+
+**Accepted** · 2026-10-25 · Phase 5
+
+**Decision** ([agent/approval.py](brain/src/brain/agent/approval.py)):
+1. The UI sends back `draft_hash` (sha256 of recipients, subject and body) for the draft it **displayed**. If it doesn't match, the approval is refused. That prevents approving one thing and sending another (TOCTOU, time-of-check vs time-of-use).
+2. **Claim once:** `UPDATE … SET status='sending' WHERE status='awaiting_approval'`. Only one request wins, so a double click or a retried request can't send twice.
+3. An edited body (from the UI) updates the draft first, so what you edited is what goes out.
+4. Send, then **verify**: read the message back and require the `SENT` label and the same thread. Only then does the loop close (`closed_reason = agent`), with the message id in the audit log. Otherwise the status is `sent_unverified` and the loop stays awaiting.
+5. Reject deletes the draft and reopens the loop.
+**Endpoints:** `POST /loops/{id}/close`, `GET /actions/{id}`, `POST /actions/{id}/approve`, `POST /actions/{id}/reject`. The CLI equivalents are `brain close / approve / reject`.
+
+## ADR-047: FakeMailbox pulled forward from Phase 7 for tests and agent evals
+
+**Accepted** · 2026-10-25 · amends ADR-024
+
+**Context.** Agent tests and evals need a deterministic mailbox. Testing against a real inbox is slow, flaky and a privacy problem.
+**Decision.** [mailbox/fake.py](brain/src/brain/mailbox/fake.py) implements the same `Mailbox` interface in memory. It's used by tests, by `evals/run_agent.py`, and later by the Phase 7 demo mode. The real paths stay real: `brain close` and the API use Gmail.
+
+## ADR-048: Scoped mailbox: a fixed Gmail filter on every agent search, required on the free tier
+
+**Accepted** · 2026-10-25 · Phase 5 · enforces ADR-014/027 for the agent
+
+**Context.** The connected test account is your **main** inbox (about 8,800 real emails). The agent chooses its own searches, so a query like "Priya retention" could pull real emails into prompts sent to the free tier. OAuth can't narrow this: `gmail.readonly` reads everything.
+**Decision.** [ScopedMailbox](brain/src/brain/mailbox/scoped.py) appends `MAIL_SCOPE` (e.g. `subject:"[CA-TEST]"`) to every search as `(<query>) <scope>`. Only threads a scoped search returned can be opened or drafted into, so a thread id the agent guessed or read in injected text is refused. On the free tier, `open_mailbox` **refuses** to give the agent an unscoped real mailbox. Set `MAIL_SCOPE`, or use a paid key.
+**Verified live** (2026-10-25, real Gmail): the agent found only the `[CA-TEST]` seed thread. Tests cover search scoping, an out-of-scope thread refused, and an unscoped free-tier mailbox refused.
+**Interview angle.** "When the OAuth scope is too broad, add least privilege one layer up, at the query level."
 

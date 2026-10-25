@@ -54,7 +54,7 @@ Swift menu-bar app (app/, native)              Python "brain" (brain/, Docker or
 
 - The **brain owns the database.** The Swift app talks to it over HTTP only. It never opens the SQLite file. (ADR-004)
 - **Docker can't run the app.** Docker on macOS is a Linux VM with no access to macOS APIs. Docker runs the brain, and the app always runs natively. (ADR-018)
-- Layout: `brain/` (uv project). It has `src/brain/` with `cli.py`, `config.py` (reads the repo-root `.env`), `models.py` (`ObservationIn`, the contract with the Swift app), `redact.py`, `db/` (`schema.sql`, `store.py`), `llm/client.py`, `loops/detect.py`, and `agent/draft.py`, plus `tests/`. Then `fixtures/sessions/` (synthetic observations, with the answer key in `fixtures/README.md`) and `docs/`. Also `ingest.py` (redact → dedupe → store), `api.py` (local HTTP API), `loops/pipeline.py` and `loops/worker.py`, `db/migrations/NNN_*.sql`. Then `app/`, a Swift Package: `Accessibility/` (AXElement, WindowTextReader, AXPermission), `Capture/` (CapturePolicy, AppModel), `Brain/BrainClient.swift`, `Views/MenuView.swift`, `Main.swift` (with `--dump`). Coming later: `memory/` (Phase 3), `mailbox/` (Phase 5), `evals/`.
+- Layout: `brain/` (uv project). It has `src/brain/` with `cli.py`, `config.py` (reads the repo-root `.env`), `models.py` (`ObservationIn`, the contract with the Swift app), `redact.py`, `db/` (`schema.sql`, `store.py`), `llm/client.py` (incl. the agent `Conversation`), `loops/` (detect, dedupe, verify, lifecycle, pipeline, worker), `agent/` (tools, loop, approval), `mailbox/` (base, gmail, fake), `memory/`, plus `tests/` and `evals/`. Then `fixtures/sessions/` (synthetic observations, with the answer key in `fixtures/README.md`) and `docs/`. Also `ingest.py` (redact → dedupe → store), `api.py` (local HTTP API), `loops/pipeline.py` and `loops/worker.py`, `db/migrations/NNN_*.sql`. Then `app/`, a Swift Package: `Accessibility/` (AXElement, WindowTextReader, AXPermission), `Capture/` (CapturePolicy, AppModel), `Brain/BrainClient.swift`, `Views/MenuView.swift`, `Main.swift` (with `--dump`).
 
 ## Tech stack (details and reasons in `decisions.md`)
 
@@ -87,6 +87,7 @@ Swift menu-bar app (app/, native)              Python "brain" (brain/, Docker or
 - **No email is sent without an explicit human click.** The model can draft. Only a user action in the UI triggers `send`. The send endpoint must refuse calls that don't come from an approval.
 - **Captured screen text and email bodies are untrusted data, not instructions.** Wrap them in delimiters in prompts and tell the model they are data. The agent may only use allowlisted tools, and recipients must already be in the thread.
 - **Every agent action goes into an audit log** (`actions` table): tool, inputs, outputs, who approved it, when.
+- **The agent's mailbox is scoped on the free tier** (`MAIL_SCOPE`, ADR-048): it may only see test threads.
 - **Free-tier Gemini is for synthetic and test data only.** Google may use free-tier content and have humans review it (ADR-014). Live capture of real screens needs `GEMINI_TIER=paid`, and the app shows a warning otherwise.
 - Redact obvious secrets (API keys, card numbers, OTPs) before storing anything **and** before any API call. The capture denylist covers password managers, banking, and System Settings.
 - Nothing persistent leaves the Mac. The brain's port binds to `127.0.0.1` only, including in Docker port mappings.
@@ -108,6 +109,9 @@ uv run brain process [--close-now] | embed | purge   # process episodes (--close
 LLM_MODEL=gemini-3.5-flash-lite uv run python -m evals.run_retrieval [--rebuild]   # retrieval eval (ADR-039)
 make events BUNDLE=com.apple.TextEdit SECONDS=10   # which AX notifications an app actually sends
 uv run brain resolve | dismiss | reopen | history <id>   # loop lifecycle (you are the actor)
+uv run brain gmail-login | gmail-status | gmail-logout   # Gmail OAuth (token in the Keychain; needs credentials.json)
+MAIL_SCOPE='subject:"[CA-TEST]"' uv run brain close <loop> → approve <action> [--edit] | reject <action>   # agent drafts; only approve sends; scope required on free tier
+LLM_MODEL=gemini-3.5-flash-lite uv run python -m evals.run_agent   # agent eval (FakeMailbox, real model)
 LLM_MODEL=gemini-3.5-flash-lite uv run python -m evals.run_loops [--dataset loops_holdout.jsonl] [--fresh]   # loop eval
 cp .env.example .env                                  # add GEMINI_API_KEY (repo root)
 cd brain && uv sync
@@ -115,7 +119,6 @@ cd brain && uv sync
 uv run brain ingest ../fixtures/sessions/demo_week.jsonl   # store + detect loops (-v logs each LLM call)
 uv run brain loops [--all]                            # list loops
 uv run brain show <id>                                # loop + evidence
-uv run brain close <id>                               # draft the reply (never sends), audit-logged
 uv run brain detect                                   # retry detection on unprocessed observations
 uv run brain where | reset                            # data location / delete the DB
 
@@ -126,7 +129,7 @@ DATA_DIR=/tmp/ctx uv run brain …                      # use a throwaway DB
 
 ## Where things are tracked
 
-- `plan.md`: phases, tasks, current status. **Current phase: Phase 4 done (2026-10-25). Waiting for the user's approval before Phase 5.**
+- `plan.md`: phases, tasks, current status. **Current phase: Phase 5 done and verified live on Gmail (2026-10-25). Waiting for approval before Phase 6.**
 - `decisions.md`: ADRs, meaning every decision with its options and tradeoffs.
 - `learnings.md`: concept notes and interview prep, appended after each task.
 - `challenges.md`: hard problems, what we tried, what worked, with numbers and a pitch line. Material for interviews and cold DMs.

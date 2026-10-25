@@ -28,6 +28,9 @@ Status: ✅ solved · 🟡 partly solved / stopgap · 🔵 proposed (not built y
 | 20 | An inferred close hid a real deadline (NDA email ≠ contract renewal) | 4 | ✅ verifier |
 | 21 | Dedupe judge called on almost everything (wrong threshold) | 4 | ✅ calibrated |
 | 22 | A flaky loop that was really a contradiction in the spec | 4 | 🔵 your product decision |
+| 23 | The agent eval said 10/10 while a draft committed the user to an 11-month lease | 5 | ✅ |
+| 24 | No OAuth scope can stop sending, so "can't send" had to be architectural | 5 | ✅ |
+| 25 | The "test" Gmail account was the main inbox | 5 | ✅ scoped mailbox |
 
 ---
 
@@ -204,4 +207,35 @@ Status: ✅ solved · 🟡 partly solved / stopgap · 🔵 proposed (not built y
 **Situation.** *"Confirm the launch date with marketing"* ← Priya appears in some full runs and not others.
 **Root cause.** My prompt says "other people's meeting action items are not loops", but also defines they_owe as "owed to the user **or a group the user is in**". Priya's item is owed to the team you're in. The model resolves the contradiction differently on each run.
 **Next.** A product decision: should "waiting on" items from meetings you attend be tracked as they_owe? (A dependency tracker, but noisier.)
+
+## 23. 10/10, while a draft committed you to an 11-month lease ✅
+
+**Situation.** The first agent eval passed 10/10, with the judge scoring every draft 5/5/5. Reading the drafts anyway turned up: *"Yes, I would like to renew the lease for another 11 months at the same rent."* The agent made a decision only you can make.
+**Why the eval missed it.** The programmatic check wanted a `[[placeholder]]`, and there was one, used for "next steps". The judge's rubric asked about grounded / addresses the ask / tone, and the draft was grounded (the terms were in the thread). **Nothing asked about authority.** An eval only catches the failures its rubric names.
+**What worked.**
+1. A new judge dimension, `respects_authority`, plus forbidden decision phrases. The eval then failed 9/10, catching it.
+2. An authority rule in the agent prompt: never accept, renew, agree to terms or pick times, and use a `[[placeholder]]` instead.
+3. **Two grader bugs that surfaced next:** an over-broad forbidden phrase that matched neutral text, and a judge penalising the correct placeholder. Those were fixed in the grader, not the agent.
+**Result.** 10/10 on three runs in a row. The report says plainly that the prompt was tuned on this eval.
+**Pitch line.** "My agent eval passed while a draft was signing the user up for a lease. I read the outputs, found the rubric had no 'authority' axis, and fixed the eval before the agent."
+
+## 24. No OAuth scope can stop sending ✅
+
+**Situation.** The design needs "the model can draft, but only you can send."
+**Why it's hard.** Gmail's `gmail.compose` scope covers drafts **and** sending, and there's no drafts-only scope. A permissions-only design can't express the rule.
+**What worked.** Make it architectural and test it:
+1. `send` isn't a model tool (the registry asserts there are no `execute` tools).
+2. Only the approval endpoint calls `send_draft`.
+3. It requires the hash of the draft you saw, claims the run atomically (it can't send twice), and verifies the message is in Sent before closing the loop.
+
+Tests cover a stale hash (refused), a double approve (sent once), an edited body (what you edited is sent), and an injected recipient (refused in code even when the model complies).
+**Pitch line.** "When the permission system couldn't express 'draft but don't send', I enforced it in the architecture and proved it with tests."
+
+## 25. The "test" Gmail account was the main inbox ✅
+
+**Situation.** For the live test, the connected account turned out to be your primary inbox (about 8,800 emails), and inference runs on Gemini's free tier, which may use what it's sent (ADR-014).
+**Why it's hard.** The agent decides its own searches, and `gmail.readonly` exposes the whole mailbox. "Be careful" in a prompt isn't a control.
+**What worked.** A **scoped mailbox**: every search gets `subject:"[CA-TEST]"` appended, only threads from scoped searches can be opened or replied in, and the free tier refuses an unscoped real mailbox. Then a synthetic `[CA-TEST]` thread was seeded for the test.
+**Result (live, real Gmail):** the agent found the seed thread, drafted with **63.6% / 58.9%** from memory (4 LLM calls, 7.4 s). Gmail independently confirmed the draft (same thread, `In-Reply-To` set). Approve → **sent, verified in Sent, loop closed**, and a double approve was refused. A second thread tested the authority rule (`[[Yes, I am renewing / No…]]`) and **reject → Gmail 404, nothing sent, loop reopened**.
+**Pitch line.** "I tested a live email agent on my real inbox without exposing my real email, by enforcing least privilege at the query level."
 

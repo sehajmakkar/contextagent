@@ -24,6 +24,10 @@ class Settings(BaseSettings):
     data_dir: Path = Path.home() / "Library" / "Application Support" / "ContextAgent"
 
     port: int = 8765
+    # The OAuth client you download from Google Cloud (gitignored: credentials*.json). See plan.md, Phase 5.
+    gmail_client_secrets: Path = REPO_ROOT / "credentials.json"
+    # A Gmail filter appended to every agent search, e.g. 'subject:"[CA-TEST]"'. Required on the free tier (ADR-048).
+    mail_scope: str = ""
     auto_detect: bool = True             # background detection while `brain serve` runs
     detect_min_interval_s: float = 6.0   # ≤ 10 detection calls a minute
     # Live screen captures go to Gemini only on the paid tier, unless you opt in (test data only!).
