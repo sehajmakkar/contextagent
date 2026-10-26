@@ -185,16 +185,18 @@ Backup scenarios (Phase 7): "reply to the recruiter with my availability" (needs
 
 **Goal:** turn the prototype into an interview.
 
-- [ ] `docs/eval-report.md`: retrieval, loop, and agent metrics, plus cost per closed loop and latency. Report honest numbers and small sample sizes.
+- [x] [`docs/eval-report.md`](docs/eval-report.md): what an eval is, retrieval / loop / agent metrics, the eval-driven fixes, cost per closed loop (about $0.004) and latency, limits. Agent **12/12** on a fresh run (2026-10-26).
 - [ ] `docs/threat-model.md`: one page covering what data exists, where it goes, the attack surface (injection, token theft), and the mitigations.
 - [ ] Seed data and reset scripts so the demo is repeatable.
-- [ ] **Reviewer packaging (moved here from Phases 1 and 5, ADR-024):** `brain/Dockerfile` (built from `uv.lock`), `docker-compose.yml` (`127.0.0.1:8765`, data folder bind-mounted), `Makefile`, `DEMO_MODE` with `FakeMailbox` plus `fixtures/inbox.json`, `docker compose run brain demo`, and recorded LLM responses so CI needs no key.
-- [ ] **Reviewer quickstart, tested on a clean macOS user account:** clone, add the key to `.env`, run `docker compose up`, then `make app` (or the prebuilt `.app` from GitHub Releases). Aim for under 5 minutes, and fix every snag you hit.
-- [ ] GitHub Actions: build the Docker image and run the tests on recorded responses, with a badge in the README.
+- [~] ~~Reviewer packaging with Docker~~: **cut** (ADR-055). The brain runs with `uv` (`uv.lock` pins every version), the app with `make`. Still optional: `DEMO_MODE` with `FakeMailbox`, so a reviewer without a Google Cloud OAuth client can try "Close it for me".
+- [x] Reviewer quickstart in `readme.md`: clone → `.env` → `uv sync` → `make brain` + `make run-app`, plus optional Gmail setup.
+- [ ] **(You)** Test that quickstart on a clean macOS user account, and fix every snag you hit.
+- [ ] GitHub Actions: run the offline tests (`make test`) on a macOS runner, with a badge in the README.
 - [ ] Evaluate SQLCipher encryption at rest (check sqlite-vec compatibility). Ship it or write down why not (ADR-014).
 - [ ] Record a 2–3 minute video: problem, live demo, architecture in 20 seconds, metrics, "what I'd build next with you".
-- [ ] Rewrite `readme.md` for outside readers: GIF, architecture diagram, metrics, how to run it.
+- [x] Rewrite `readme.md` for outside readers: what it does, flow diagram, eval headline, how to run it. **(You)** add the demo video or GIF.
 - [ ] Outreach: a short, tailored note to Minimi (reference your teardown: *"I built the next step of your inbox"*) and to Clicky. Then a version for the second-tier list.
+  - Targets (moved from `readme.md`, which is now for outside readers): projectminimi.com, heyclicky.com; then Screenpipe, Sentient OS, Pickle, Nessie, IrisGo, jo, Egoist Machines, Crater, Town, Granola, Memory Store, Epicenter, Almanac, Supermemory, Mem0.
 - [ ] Interview prep: go through `learnings.md` and practise answering every interview question out loud.
 
 **Done when:** the video and repo are sent to at least 3 companies.

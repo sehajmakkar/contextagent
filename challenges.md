@@ -220,6 +220,7 @@ Status: ✅ solved · 🟡 partly solved / stopgap · 🔵 proposed (not built y
 2. An authority rule in the agent prompt: never accept, renew, agree to terms or pick times, and use a `[[placeholder]]` instead.
 3. **Two grader bugs that surfaced next:** an over-broad forbidden phrase that matched neutral text, and a judge penalising the correct placeholder. Those were fixed in the grader, not the agent.
 **Result.** 10/10 on three runs in a row. The report says plainly that the prompt was tuned on this eval.
+**Follow-up (ADR-054).** With 12 scenarios and a longer prompt, the lease overstep came back in 2 of 3 runs. So the rule moved into code, as an authority verifier before any draft is saved. It over-blocked once ("confirm 2:30" *is* the owed task) and was narrowed to "decisions beyond what's owed". Fresh run on 2026-10-26: **12/12**, and the lease draft was blocked once and then rewritten with a placeholder.
 **Pitch line.** "My agent eval passed while a draft was signing the user up for a lease. I read the outputs, found the rubric had no 'authority' axis, and fixed the eval before the agent."
 
 ## 24. No OAuth scope can stop sending ✅

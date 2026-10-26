@@ -40,13 +40,13 @@ Interview angle: the one-sentence answer to "why?"
 | 015 | Small hand-labeled evals from day one | **Accepted** |
 | 016 | MCP in v2 | **Accepted** |
 | 017 | Python tooling: uv, FastAPI, Pydantic, pytest | **Accepted** |
-| 018 | Runs on a reviewer's Mac: Docker brain, native app, demo mode | **Accepted**, amended by 024 |
+| 018 | Runs on a reviewer's Mac: Docker brain, native app, demo mode | **Superseded** by 055 (the Docker part) |
 | 019 | Gemini as the LLM through the official `google-genai` SDK | **Accepted** |
 | 020 | Gemini embeddings (`gemini-embedding-2`, 768 dimensions), stored locally | **Accepted** |
 | 021 | Call Gemini through `models.generate_content` (stateless), not the Interactions API | **Accepted** |
 | 022 | Plain `sqlite3` with hand-written SQL and `user_version` migrations, no ORM | **Accepted** |
 | 023 | CLI with Typer + Rich | **Accepted** |
-| 024 | Real first: demo mode, fake mailbox, Docker, and recorded responses move to Phase 7 | **Accepted** |
+| 024 | Real first: demo mode, fake mailbox, Docker, and recorded responses move to Phase 7 | **Accepted**, Docker part superseded by 055 |
 | 025 | Loop detection v0: one call per observation, confidence ≥ 0.6, grounding check, exact-quote dedupe | **Accepted** |
 | 026 | Actions are risk-classed tools behind connectors, with approval keyed on risk | Proposed (Phase 5) |
 | 027 | ~~Live captures stay local on the free tier~~ | Superseded by 052 |
@@ -77,6 +77,7 @@ Interview angle: the one-sentence answer to "why?"
 | 052 | Your call: remove the free-tier gating and both scopes; every capture is processed | **Accepted** · supersedes 027, 048, part of 051 |
 | 053 | No thread → a new email; recipients come only from the loop's known contact or from you | **Accepted** · amends 012, 045 |
 | 054 | Prompt rules that kept flaking became code: authority verifier + right-person check | **Accepted** |
+| 055 | No Docker: the reviewer runs the brain with `uv` and the app with `make` | **Accepted** · supersedes the Docker part of 018 / 024 |
 
 ---
 
@@ -646,5 +647,15 @@ Query embedding (network) p50 605 ms. Search itself is under 1 ms locally.
 2. **Authority verifier (generator + verifier):** before any draft is saved, a narrow call asks one question: *does this draft decide, accept, decline, renew, agree to terms, pick times or commit the user to something new?* If yes, the save is refused, and the model must use a `[[placeholder]]` and list it in missing_info. Then the UI's placeholder guard blocks Approve.
 **Cost.** One small extra call per draft (about 1 s), on the behaviour that matters most to the pitch.
 **Interview angle.** "When a rule flaked in the eval, I moved it from the prompt into code. Deterministic where possible, a narrow verifier where it needs judgement."
-**Measured after the change** (real model, 3 runs): lease and wrong-person **fixed** (passed every run they ran in). New: the verifier **over-blocked** "confirm the PyCon talk slot" (2/2 runs lost the time). Confirming was the owed task, not a new decision. The verifier wording was tightened to block only decisions *beyond what's owed*. **Not yet re-measured:** run 3 hit the Flash-Lite daily quota (resets ~12:33 IST, 26 Oct).
+**Measured after the change** (real model, 3 runs): lease and wrong-person **fixed** (passed every run they ran in). New: the verifier **over-blocked** "confirm the PyCon talk slot" (2/2 runs lost the time). Confirming was the owed task, not a new decision. The verifier wording was tightened to block only decisions *beyond what's owed*. **Re-measured 2026-10-26: 12/12**, with PyCon confirming 2:30 and the lease's first draft blocked by the verifier before the agent rewrote it with a placeholder. One run so far (see `docs/eval-report.md`).
+
+## ADR-055: No Docker. The reviewer runs the brain with `uv` and the app with `make`
+
+**Accepted** · 2026-10-26 · Phase 7 · your call · supersedes the Docker part of ADR-018 / ADR-024
+
+**Context.** ADR-018 planned a Docker image for the brain so a reviewer gets identical dependencies. But the app can't run in Docker at all (Docker on macOS is a Linux VM with no Accessibility API), so the reviewer needs a Mac with the Swift toolchain anyway.
+**Options.** (A) Docker brain + native app (ADR-018). (B) **Native both: `uv` for the brain, `make` for the app.**
+**Decision.** B. `uv sync` installs the exact locked versions from `uv.lock`, which was the reproducibility Docker was meant to buy. The quickstart is now `.env` → `make brain` → `make run-app`, written in `readme.md`.
+**Tradeoffs.** Lost: a fully isolated brain, and a headless path for non-Mac reviewers (nobody can run the product without a Mac anyway). Gained: one fewer tool to install (Docker Desktop is about 2 GB), no bind-mount and port-mapping config to get wrong, faster first start, and nothing to keep in sync between the dev path and the reviewer path.
+**Revisit when.** Shipping for real: then the brain is bundled inside the signed `.app` and started by it.
 

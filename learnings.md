@@ -57,7 +57,7 @@ Interview Q: "..."  →  short answer.
 | Gmail OAuth token | Keychain (target) or a `0600` file in the data folder (prototype) | Never in git |
 | Gemini API key | `.env` (gitignored) | |
 
-All of it sits in one folder: `~/Library/Application Support/ContextAgent/`. "Delete all data" deletes that folder. With Docker, the folder is **bind-mounted** into the container, so the data is still a normal folder on the Mac. Deleting or rebuilding the container doesn't touch it, and the container itself holds nothing.
+All of it sits in one folder: `~/Library/Application Support/ContextAgent/`. "Delete all data" deletes that folder. The brain runs natively (ADR-055), so this is a normal folder on the Mac.
 
 **The journey of one memory:**
 
@@ -81,7 +81,7 @@ Later, a search:  query ─TLS─► Gemini (embed query) ─► vector ─► n
 - **Embeddings aren't anonymous.** Research shows text can be partly reconstructed from embeddings ("embedding inversion"). Treat vectors as just as sensitive as the text.
 - **Stateless calls.** Some APIs offer to keep your conversation on their servers (Gemini's `previous_interaction_id`). We don't use that, so conversation state also stays on the Mac.
 - **Redaction happens twice**, before storing and before any API call. Anything that never leaves the Mac can't leak from Google's side.
-- **Localhost binding.** The brain listens only on `127.0.0.1` (including the Docker port mapping), so other machines on your Wi-Fi can't query your memory.
+- **Localhost binding.** The brain listens only on `127.0.0.1` , so other machines on your Wi-Fi can't query your memory.
 
 **Interview Q:** "You say local-first, but you call a cloud API. Isn't that a contradiction?" → Local-first means the durable copy and the control are yours. Storage, the index, and search run locally. Cloud inference is transient and minimal. I can tell you exactly which bytes leave, on which tier, and I have a strict mode (local models) on the roadmap.
 **Interview Q:** "Why not encrypt the DB?" → FileVault already encrypts the disk. App-level encryption (SQLCipher) protects against other processes and backups. It's in Phase 7, pending sqlite-vec compatibility.
@@ -154,7 +154,7 @@ Later, a search:  query ─TLS─► Gemini (embed query) ─► vector ─► n
 
 **What:** Docker packages an app and its dependencies into an image, so it runs the same on any machine.
 **How it works on a Mac:** containers need a Linux kernel, so Docker Desktop runs a small **Linux VM**, and containers run inside it. That means a container can't call macOS APIs: no Accessibility, no menu bar, no Keychain.
-**In our project:** the Python brain runs in Docker, and the Swift app runs natively and talks to it over `127.0.0.1:8765`. Data lives in a bind-mounted folder on the Mac.
+**In our project:** planned for the brain (ADR-018), then **cut** (ADR-055): the app can't be containerised on macOS, and `uv.lock` already pins the brain's dependencies. Both run natively and talk over `127.0.0.1:8765`.
 **Gotchas:** inside the container, the server must bind to `0.0.0.0`, while the *host* mapping must be `127.0.0.1:8765:8765`. Otherwise it's reachable from your LAN. You need images built for arm64 (Apple Silicon), so check that sqlite-vec has a linux/arm64 wheel.
 **Interview Q:** "Why not put the whole thing in Docker?" → Docker on macOS is Linux in a VM, and screen-text capture needs macOS APIs. So the AI service is containerized for reproducibility, and the OS-facing part stays native.
 
@@ -525,9 +525,31 @@ FastAPI runs sync endpoints *and* sync `yield` dependencies on a thread pool. A 
 ### Contract tests with real responses  (Phase 6 · [InboxTests.swift](app/Tests/ContextAgentTests/InboxTests.swift))
 The Swift `Decodable` types and the Python Pydantic models are two copies of one contract. We captured **real responses** from a running brain (anonymized), stored them as test fixtures, and decode them in a Swift test. A renamed field now fails a test instead of silently breaking the panel.
 
+## Phase 7: reporting results and shipping for reviewers
+
+### Reporting evals honestly  (Phase 7 · [docs/eval-report.md](docs/eval-report.md))
+An eval report is a claim someone else will check, so its structure is: **question → test set → metric → bar → result → what failed → what changed → limits**.
+- **Lead with the number that could have failed.** For loops that's the held-out 91%, not the 100% on a set the prompt's author also wrote.
+- **Give the worst error its own metric.** "Unsafe closes: 0" and "emails sent: 0" are separate from accuracy, because one of those is worse than ten small misses.
+- **Show the history, not just the final score.** "10/10 → found a lease overstep → 9/10 → … → 12/12" proves the eval actually changed the system.
+- **State n and the variance.** One case is 3–8 points on these sets. One agent run is one sample (earlier runs ranged from 10/12 to 12/12).
+- **Separate API effects from code effects.** The agent's median went from 5.3 s to 33 s between two days. A probe showed the same trivial call taking 0.9 to 8.9 s, so most of that was provider latency, with one extra verifier call per draft.
+**Interview Q:** "Your eval says 100%. Do you believe it?" → Not by itself: check for ceiling effects (Recall@5 on 45 items), leakage (the same author wrote the prompt and the tests), and grader blind spots (no authority axis). Then add rank metrics, a held-out set and a new rubric axis, and report the lower number.
+
+### Native over Docker for a Mac-only product  (Phase 7 · ADR-055)
+Docker on macOS is a Linux VM, so the half of the product that uses the Accessibility API can never be in a container. Once the reviewer needs a Mac and the Swift toolchain anyway, `uv sync` from `uv.lock` provides the reproducibility Docker was meant to buy (exact versions, one command), without a 2 GB install or port and volume mapping to get wrong.
+**Interview Q:** "Why no Docker?" → It can't run the app on macOS, and the lockfile already pins the brain. Docker would add a moving part for no reviewer benefit. When this ships, the brain gets bundled inside the signed `.app`.
+
 ---
 
 ## Log: what we actually learned
+
+### 2026-10-26: Phase 7, evals and reviewer README
+
+- Fresh agent eval: **12/12**, and the narrowed authority verifier no longer over-blocks PyCon. The lease's first draft was blocked, then rewritten with a placeholder, which is the verifier working as designed.
+- Loop evals were re-scored from cache (0 API calls) and are unchanged: 100% on the main set, 91% precision on the held-out set.
+- Docker cut (ADR-055). The README now has a native quickstart, the flow diagram and the eval headline, and `docs/eval-report.md` holds the full method.
+- Cost per closed loop: about $0.004 at paid Flash-Lite prices. Latency is dominated by the API on a busy day.
 
 _Newest first. Add entries as tasks finish._
 

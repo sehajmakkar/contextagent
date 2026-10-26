@@ -1,6 +1,6 @@
-# Loop eval (loops): 2026-10-25 · `gemini-3.5-flash-lite`
+# Loop eval (loops): 2026-10-26 · `gemini-3.5-flash-lite`
 
-43 labelled screens (18 expected new loops, 5 expected closes, 21 negatives). 6 new API call(s) this run; the rest came from the cache.
+43 labelled screens (18 expected new loops, 5 expected closes, 21 negatives). 0 new API call(s) this run; the rest came from the cache.
 
 ## New loops (confidence ≥ 0.6)
 Precision **100%** (18/18) · Recall **100%** (18/18) · F1 **1.00** · due date right 14/14

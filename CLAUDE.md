@@ -10,7 +10,7 @@ It's inspired by [Minimi](https://www.projectminimi.com/), which captures contex
 
 ### Why it exists (this decides most tradeoffs)
 
-1. **Get an interview, then an offer**, at Minimi, Clicky, and similar companies (see `readme.md`). The deliverable is a **polished demo prototype** plus a **GitHub repo that runs on a reviewer's Mac in minutes**. It is not a product.
+1. **Get an interview, then an offer**, at Minimi, Clicky, and similar companies (target list in `plan.md`, Phase 7 outreach). The deliverable is a **polished demo prototype** plus a **GitHub repo that runs on a reviewer's Mac in minutes**. It is not a product.
 2. **Learn the AI engineering concepts in depth.** The user must be able to explain every technology, decision, and tradeoff in an interview.
 
 So: demo quality, the ability to reproduce it, and understanding come before completeness. When unsure, choose whatever makes a sharper 3-minute demo and a better interview story.
@@ -31,7 +31,7 @@ Match the depth of explanation to the concept. Spend more on ideas that will com
 
 ## Scope guardrails
 
-In scope: single user, Apple Silicon macOS, English, **Gmail as the only action target**, local storage, one strong demo scenario, a **demo mode a reviewer can run with just a free Gemini key**.
+In scope: single user, Apple Silicon macOS, English, **Gmail as the only action target**, local storage, one strong demo scenario, a **reviewer quickstart that runs with just a Gemini key** (Gmail optional).
 
 Out of scope unless an ADR says otherwise: screenshots or screen recording of any kind (ADR-005), accounts/auth for our app, billing, sync, Windows/Linux for the app, App Store sandboxing, multi-provider email, mobile, production hardening.
 
@@ -40,7 +40,7 @@ If something isn't needed for the demo, for reproducibility, or for learning, cu
 ## Architecture (target)
 
 ```
-Swift menu-bar app (app/, native)              Python "brain" (brain/, Docker or uv)
+Swift menu-bar app (app/, native)              Python "brain" (brain/, uv)
 ├─ Capture: Accessibility API reads    ──►     FastAPI on 127.0.0.1:8765
 │  focused app/window text (no pixels)         ├─ ingest → redact → store observations
 ├─ Inbox UI: open loops, "Close it",   ◄──►    ├─ memory: SQLite + FTS5 + sqlite-vec
@@ -53,7 +53,7 @@ Swift menu-bar app (app/, native)              Python "brain" (brain/, Docker or
 ```
 
 - The **brain owns the database.** The Swift app talks to it over HTTP only. It never opens the SQLite file. (ADR-004)
-- **Docker can't run the app.** Docker on macOS is a Linux VM with no access to macOS APIs. Docker runs the brain, and the app always runs natively. (ADR-018)
+- **Both run natively, no Docker** (ADR-055). Docker on macOS is a Linux VM with no access to macOS APIs, so the app could never run in it; `uv.lock` gives the brain reproducible dependencies instead.
 - Layout: `brain/` (uv project). It has `src/brain/` with `cli.py`, `config.py` (reads the repo-root `.env`), `models.py` (`ObservationIn`, the contract with the Swift app), `redact.py`, `db/` (`schema.sql`, `store.py`), `llm/client.py` (incl. the agent `Conversation`), `loops/` (detect, dedupe, verify, lifecycle, pipeline, worker), `agent/` (tools, loop, approval), `mailbox/` (base, gmail, fake), `memory/`, plus `tests/` and `evals/`. Then `fixtures/sessions/` (synthetic observations, with the answer key in `fixtures/README.md`) and `docs/`. Also `ingest.py` (redact → dedupe → store), `api.py` (local HTTP API), `loops/pipeline.py` and `loops/worker.py`, `db/migrations/NNN_*.sql`. Then `app/`, a Swift Package: `Accessibility/` (AXElement, WindowTextReader, AXPermission), `Capture/` (CapturePolicy, EventCoalescer, AppModel), `Brain/BrainClient.swift` (incl. SSE), `Inbox/` (types, logic, InboxModel), `Views/` (Panel, LoopCard, AgentRunView, Dashboard, Settings, Components), `Main.swift` (scenes, `--dump`, `--events`).
 
 ## Tech stack (details and reasons in `decisions.md`)
@@ -66,8 +66,8 @@ Swift menu-bar app (app/, native)              Python "brain" (brain/, Docker or
 | LLM | Gemini via the official `google-genai` SDK. `gemini-3.8-flash` by default |
 | Embeddings | `gemini-embedding-2` at 768 dimensions, vectors stored locally |
 | Storage | SQLite (WAL) + FTS5 + `sqlite-vec`, one file on the Mac |
-| Actions | Gmail API (OAuth installed-app flow). `FakeMailbox` in demo mode |
-| Run | `docker compose` (brain) + native app. `DEMO_MODE=1` for reviewers |
+| Actions | Gmail API (OAuth installed-app flow). `FakeMailbox` in tests and evals |
+| Run | `make brain` (uv) + `make run-app` (native). No Docker (ADR-055) |
 | v2 | MCP server exposing memory and loops |
 
 ## Gemini API conventions (checked 2026-10-24; the API changes fast, so check the live docs before assuming)
@@ -90,16 +90,16 @@ Swift menu-bar app (app/, native)              Python "brain" (brain/, Docker or
 - **Every agent action goes into an audit log** (`actions` table): tool, inputs, outputs, who approved it, when.
 - **Every capture is processed by Gemini while the app runs** (your decision, ADR-052). On the free tier Google may use that content. Pause capture when you don't want the screen read.
 - Redact obvious secrets (API keys, card numbers, OTPs) before storing anything **and** before any API call. The capture denylist covers password managers, banking, and System Settings.
-- Nothing persistent leaves the Mac. The brain's port binds to `127.0.0.1` only, including in Docker port mappings.
+- Nothing persistent leaves the Mac. The brain's port binds to `127.0.0.1` only.
 - Secrets live in `.env` (gitignored) or the macOS Keychain. Never commit API keys, OAuth tokens, `brain.db`, or real personal data. Fixtures are synthetic.
 
 ## Commands
 
-Real paths first. Docker and demo mode come in Phase 7 (ADR-024).
+Everything runs natively (ADR-055). The reviewer quickstart is in `readme.md`.
 **Demo flow:** `.env` with your key and `LLM_MODEL`, then `make brain` + `make run-app`. Nothing else.
 
 ```bash
-make brain                    # brain API on 127.0.0.1:8765 + background detection (free tier: captures held back)
+make brain                    # brain API on 127.0.0.1:8765 + background detection
 make run-app                  # build, sign, and launch the menu-bar app (needs the Accessibility grant)
 make dump BUNDLE=com.google.Chrome   # read one app's window once: text, node count, timing, role histogram
 make test                     # brain (pytest) + app (swift test)
@@ -130,7 +130,7 @@ DATA_DIR=/tmp/ctx uv run brain …                      # use a throwaway DB
 
 ## Where things are tracked
 
-- `plan.md`: phases, tasks, current status. **Current phase: Phase 6 built (2026-10-25); the user's hands-on UI test is next, then Phase 7.**
+- `plan.md`: phases, tasks, current status. **Current phase: Phase 7 (2026-10-26). Evals, README and eval report done; next: demo video, clean-account quickstart test, outreach.**
 - `decisions.md`: ADRs, meaning every decision with its options and tradeoffs.
 - `learnings.md`: concept notes and interview prep, appended after each task.
 - `challenges.md`: hard problems, what we tried, what worked, with numbers and a pitch line. Material for interviews and cold DMs.

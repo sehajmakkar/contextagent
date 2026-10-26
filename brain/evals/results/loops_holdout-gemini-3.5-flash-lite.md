@@ -1,6 +1,6 @@
-# Loop eval (loops_holdout): 2026-10-25 · `gemini-3.5-flash-lite`
+# Loop eval (loops_holdout): 2026-10-26 · `gemini-3.5-flash-lite`
 
-16 labelled screens (10 expected new loops, 1 expected closes, 7 negatives). 1 new API call(s) this run; the rest came from the cache.
+16 labelled screens (10 expected new loops, 1 expected closes, 7 negatives). 0 new API call(s) this run; the rest came from the cache.
 
 ## New loops (confidence ≥ 0.6)
 Precision **91%** (10/11) · Recall **100%** (10/10) · F1 **0.95** · due date right 8/8
