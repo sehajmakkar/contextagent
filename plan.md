@@ -174,6 +174,7 @@ Backup scenarios (Phase 7): "reply to the recruiter with my availability" (needs
 - [x] Demo-ready after your feedback (ADR-051): `LIVE_SCOPE` + end-of-visit, so a `[CA-TEST]` email becomes a loop seconds after you switch away. No commands beyond `make brain` + the app.
 - [x] **(You)** Hands-on run: Gmail reply and WhatsApp → new email both sent and verified (2026-10-25).
 - [x] Polish from that run: pulsing dot instead of the "Checking…" spinner (hidden while paused), draft editor cursor fix, flow diagram in `readme.md`.
+- [x] Pre-shoot UI pass (2026-10-29): menu-bar panel is a glance list (app icon + title only, click opens the dashboard); dashboard text and controls enlarged.
 - [ ] Demo shoot. [~] "Demo mode" badge moved to Phase 7 with demo mode itself.
 
 **Concepts:** SwiftUI state, `MenuBarExtra`, streaming UX for agents, trust UX (showing evidence and keeping the human in control).

@@ -45,7 +45,7 @@ struct ContextAgentApp: App {
         Window("Context Agent", id: "dashboard") {
             DashboardView(capture: capture, inbox: inbox)
         }
-        .defaultSize(width: 980, height: 640)
+        .defaultSize(width: 1120, height: 760)
 
         Window("Context Agent Settings", id: "settings") {
             SettingsView(capture: capture, inbox: inbox)

@@ -20,12 +20,12 @@ struct AgentRunView: View {
                     }
                     if run.phase == .running {
                         HStack(spacing: 6) {
-                            ProgressView().controlSize(.mini)
+                            ProgressView().controlSize(.small)
                             Text(run.steps.isEmpty ? "Starting…" : "Thinking…").foregroundStyle(.secondary)
                         }
                     }
                 }
-                .font(.caption)
+                .font(.callout)
             }
 
             switch run.phase {
@@ -42,13 +42,13 @@ struct AgentRunView: View {
                     Banner(symbol: action.outcome == "already_done" ? "checkmark.seal" : "info.circle", tint: .blue,
                            text: outcomeText(action))
                     HStack {
-                        Button("OK") { inbox.dismissRun(loopID) }.controlSize(.small)
+                        Button("OK") { inbox.dismissRun(loopID) }.buttonStyle(ActionButtonStyle())
                     }
                 }
             case let .failed(detail):
                 VStack(alignment: .leading, spacing: 6) {
                     Banner(symbol: "exclamationmark.triangle", tint: .red, text: detail)
-                    Button("OK") { inbox.dismissRun(loopID) }.controlSize(.small)
+                    Button("OK") { inbox.dismissRun(loopID) }.buttonStyle(ActionButtonStyle())
                 }
             }
         }
@@ -90,7 +90,7 @@ private struct DraftReview: View {
         VStack(alignment: .leading, spacing: 6) {
             if draft.isNewEmail {
                 Label("New email · not a reply (no existing thread)", systemImage: "square.and.pencil")
-                    .font(.caption2.weight(.medium)).foregroundStyle(.blue)
+                    .font(.callout.weight(.medium)).foregroundStyle(.blue)
             }
             Grid(alignment: .leading, horizontalSpacing: 6, verticalSpacing: 2) {
                 GridRow {
@@ -109,11 +109,11 @@ private struct DraftReview: View {
                     Text(verbatim: draft.subject).lineLimit(1)
                 }
             }
-            .font(.caption)
+            .font(.callout)
 
             TextEditor(text: $text)
-                .font(.system(size: 12))
-                .frame(minHeight: 120, maxHeight: 220)
+                .font(.system(size: 15))
+                .frame(minHeight: 160, maxHeight: 300)
                 .scrollContentBackground(.hidden)
                 .padding(6)
                 .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .textBackgroundColor)))
@@ -138,18 +138,19 @@ private struct DraftReview: View {
 
             HStack {
                 Button(role: .destructive) { Task { await inbox.reject(loopID) } } label: { Text("Reject") }
+                    .buttonStyle(ActionButtonStyle(kind: .destructive))
                     .disabled(sending)
                 Spacer()
                 if sending { ProgressView().controlSize(.small) }
                 // The only path that sends email, and only for the draft on screen (ADR-046).
                 Button { Task { await inbox.approve(loopID) } } label: { Label("Approve & Send", systemImage: "paperplane") }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(ActionButtonStyle(kind: .send))
                     .disabled(sending || !placeholders.isEmpty || !recipientOK
                               || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     .help(!recipientOK ? "Add a recipient first" : placeholders.isEmpty ? "Send exactly this email"
                                                                                        : "Fill in the [[placeholders]] first")
             }
-            .controlSize(.small)
+            .controlSize(.large)
         }
     }
 }

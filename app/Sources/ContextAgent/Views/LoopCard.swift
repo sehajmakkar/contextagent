@@ -8,21 +8,21 @@ struct LoopCard: View {
     var agentHelp: String = ""
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 6) {
-                Circle().fill(dotColor).frame(width: 6, height: 6)
-                AppIcon(bundleID: loop.bundleId, size: 16)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Circle().fill(dotColor).frame(width: 8, height: 8)
+                AppIcon(bundleID: loop.bundleId, size: 22)
                 Text(verbatim: "· \(loop.windowTitle ?? loop.sourceApp ?? "")").lineLimit(1).foregroundStyle(.secondary)
                 Spacer(minLength: 4)
                 DueBadge(due: loop.dueDate)
             }
-            .font(.caption)
+            .font(.callout)
 
-            Text(verbatim: loop.title).font(.system(size: 13, weight: .semibold)).fixedSize(horizontal: false, vertical: true)
+            Text(verbatim: loop.title).font(.system(size: 18, weight: .semibold)).fixedSize(horizontal: false, vertical: true)
             Text(verbatim: directionLabel(loop) + (loop.note.map { " · \($0)" } ?? ""))
-                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                .font(.body).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             if let quote = loop.quote {
-                Text(verbatim: "Source: “\(quote)”").font(.caption).foregroundStyle(.tertiary).lineLimit(3)
+                Text(verbatim: "Source: “\(quote)”").font(.callout).foregroundStyle(.tertiary).lineLimit(3)
             }
 
             if let run = inbox.runs[loop.id] {
@@ -31,8 +31,8 @@ struct LoopCard: View {
                 actions
             }
         }
-        .padding(10)
-        .background(RoundedRectangle(cornerRadius: 10).fill(Color.secondary.opacity(0.06)))
+        .padding(14)
+        .background(RoundedRectangle(cornerRadius: 12).fill(Color.secondary.opacity(0.06)))
     }
 
     private var actions: some View {
@@ -40,18 +40,19 @@ struct LoopCard: View {
             if loop.direction != "self" {
                 // The differentiator: Minimi resolves, we close it for you (with your approval).
                 Button { Task { await inbox.closeItForMe(loop) } } label: { Label("Close it for me", systemImage: "sparkles") }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(ActionButtonStyle(kind: .primary))
                     .disabled(!agentReady || loop.state != "open")
                     .help(agentReady ? "The agent drafts the reply in the thread. Nothing is sent without you." : agentHelp)
             }
             Button("Resolve") { Task { await inbox.resolve(loop) } }
+                .buttonStyle(ActionButtonStyle())
             Spacer()
             Menu {
                 Button("Not a loop") { Task { await inbox.notALoop(loop) } }
             } label: { Image(systemName: "ellipsis") }
                 .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
         }
-        .controlSize(.small)
+        .controlSize(.large)
     }
 
     private var dotColor: Color {
@@ -70,10 +71,10 @@ struct ClosedLoopRow: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            AppIcon(bundleID: loop.bundleId, size: 14)
+            AppIcon(bundleID: loop.bundleId, size: 20)
             VStack(alignment: .leading, spacing: 1) {
-                Text(verbatim: loop.title).font(.caption).strikethrough().lineLimit(1)
-                Text(verbatim: closedHow).font(.caption2).foregroundStyle(.secondary)
+                Text(verbatim: loop.title).font(.body).strikethrough().lineLimit(1)
+                Text(verbatim: closedHow).font(.callout).foregroundStyle(.secondary)
             }
             Spacer()
             if let url = loop.proofUrl.flatMap(URL.init(string:)) {

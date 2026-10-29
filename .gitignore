@@ -21,3 +21,6 @@ xcuserdata/
 
 # eval caches (rebuilt from fixtures)
 brain/evals/.cache/
+
+# private demo scripts
+demo.md

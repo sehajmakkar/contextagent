@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// The menu-bar panel: status, app filters, open loops (with "Close it for me"), and recently closed ones.
+/// The menu-bar panel: a glance at what's open. All the work happens in the dashboard.
 struct PanelView: View {
     let capture: AppModel
     let inbox: InboxModel
@@ -10,22 +10,13 @@ struct PanelView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             header
-            StatusBanners(capture: capture, inbox: inbox)
-            InboxList(inbox: inbox, capture: capture, compact: true)
-            if !inbox.closed.isEmpty {
-                DisclosureGroup(isExpanded: $showClosed) {
-                    VStack(spacing: 6) {
-                        ForEach(inbox.closed.prefix(8)) { ClosedLoopRow(loop: $0, inbox: inbox) }
-                    }.padding(.top, 4)
-                } label: {
-                    Text("\(inbox.closed.count) closed").font(.caption).foregroundStyle(.secondary)
-                }
-            }
+            StatusBanners(capture: capture, inbox: inbox, compact: true)
+            loopList
             Divider()
             footer
         }
         .padding(14)
-        .frame(width: 400)
+        .frame(width: 360)
         .task {
             // While the panel is open, refresh every few seconds so a just-detected loop pops in live.
             while !Task.isCancelled {
@@ -36,12 +27,41 @@ struct PanelView: View {
         }
     }
 
+    /// Just what's open: app icon + title. Everything else (close, resolve, drafts) lives in the dashboard.
+    /// A plain stack, not a ScrollView: inside a menu-bar window a ScrollView can collapse to zero height.
+    private var loopList: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            if inbox.open.isEmpty {
+                Text("No open loops. You're all set.").font(.callout).foregroundStyle(.secondary).padding(.vertical, 8)
+            }
+            ForEach(inbox.open.prefix(Self.maxRows)) { loop in
+                Button { open("dashboard") } label: {
+                    HStack(spacing: 10) {
+                        AppIcon(bundleID: loop.bundleId, size: 20)
+                        Text(verbatim: loop.title).font(.system(size: 13)).lineLimit(2)
+                            .multilineTextAlignment(.leading).frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .padding(.vertical, 6).padding(.horizontal, 6)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Open the dashboard")
+            }
+            if inbox.open.count > Self.maxRows {
+                Text("+\(inbox.open.count - Self.maxRows) more in the dashboard").font(.caption).foregroundStyle(.secondary)
+                    .padding(.horizontal, 6)
+            }
+        }
+    }
+
+    private static let maxRows = 8
+
     private var header: some View {
         HStack(alignment: .firstTextBaseline) {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Context Agent").font(.headline)
                 HStack(spacing: 6) {
-                    Text("\(inbox.open.count) open loops · \(inbox.closed.count) closed").font(.caption).foregroundStyle(.secondary)
+                    Text("\(inbox.open.count) open loops").font(.caption).foregroundStyle(.secondary)
                     if capture.isProcessing { PulseDot().help("Checking what you just looked at") }
                 }
             }
@@ -74,12 +94,10 @@ struct PanelView: View {
     }
 }
 
-/// Filter chips + the open loops, empty and error states included. Shared by the panel and the dashboard.
+/// The dashboard's inbox: filter chips + open loop cards, empty state included.
 struct InboxList: View {
     let inbox: InboxModel
     let capture: AppModel
-    let compact: Bool
-
     var body: some View {
         let apps = InboxLogic.appFilters(inbox.open)
         VStack(alignment: .leading, spacing: 8) {
@@ -104,17 +122,16 @@ struct InboxList: View {
                         }
                     }
                 }
-                .frame(maxHeight: compact ? 470 : .infinity)
             }
         }
     }
 
     private var emptyState: some View {
         VStack(spacing: 6) {
-            Image(systemName: "checkmark.circle").font(.title2).foregroundStyle(.green)
-            Text("You're all set").font(.subheadline.weight(.semibold))
+            Image(systemName: "checkmark.circle").font(.largeTitle).foregroundStyle(.green)
+            Text("You're all set").font(.title3.weight(.semibold))
             Text("New commitments appear here when they show up on your screen.")
-                .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                .font(.body).foregroundStyle(.secondary).multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 24)
@@ -125,6 +142,7 @@ struct InboxList: View {
 struct StatusBanners: View {
     let capture: AppModel
     let inbox: InboxModel
+    var compact = false
 
     var body: some View {
         VStack(spacing: 6) {
@@ -137,7 +155,7 @@ struct StatusBanners: View {
             if capture.brainStatus == nil {
                 Banner(symbol: "brain", tint: .red, text: "The brain isn't running. Start it with `make brain`.")
             } else if let status = capture.brainStatus {
-                if !status.agentReady {
+                if !status.agentReady && !compact {
                     Banner(symbol: "envelope.badge.shield.half.filled", tint: .orange, text: "Close it for me is off: \(status.agentDetail)")
                 }
             }
