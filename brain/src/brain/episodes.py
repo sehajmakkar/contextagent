@@ -41,6 +41,12 @@ def assign(conn: sqlite3.Connection, obs_id: int) -> int:
              obs["captured_at"], obs["captured_at"], dedupe_lines(obs["text"]), len(obs["text"])),
         ).lastrowid
     conn.execute("UPDATE observations SET episode_id = ? WHERE id = ?", (episode_id, obs_id))
+    if obs["source"] == "capture" and obs["capture_trigger"] != "leaving":
+        # Only the frontmost window is ever read, so reading this one means you've left every other window.
+        # This closes visits that never got a "leaving" read: another note or thread opened inside the same
+        # app (the title changed), or the app quit before it could be read one last time.
+        conn.execute("UPDATE episodes SET closed_at = ? WHERE source = 'capture' AND closed_at IS NULL AND id != ?",
+                     (now(), episode_id))
     return episode_id
 
 

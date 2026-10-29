@@ -38,11 +38,11 @@ class DetectOutcome:
 
 
 def pending(conn: sqlite3.Connection, settings: Settings, limit: int | None = None) -> list[sqlite3.Row]:
-    """Closed, unprocessed episodes, oldest first (ADR-052: every capture is processed)."""
+    """Closed, unprocessed episodes, the visit you just left first (ADR-052: every capture is processed)."""
     with conn:
         episodes.close_stale(conn)
     sql = ("SELECT * FROM episodes WHERE closed_at IS NOT NULL AND processed_at IS NULL"
-           f" AND process_attempts < {MAX_ATTEMPTS} ORDER BY id" + (f" LIMIT {int(limit)}" if limit else ""))
+           f" AND process_attempts < {MAX_ATTEMPTS} ORDER BY closed_at DESC, id DESC" + (f" LIMIT {int(limit)}" if limit else ""))
     return conn.execute(sql).fetchall()
 
 

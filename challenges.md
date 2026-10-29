@@ -34,6 +34,7 @@ Status: ✅ solved · 🟡 partly solved / stopgap · 🔵 proposed (not built y
 | 26 | Parallel requests from the new UI crashed SQLite (thread affinity) | 6 | ✅ |
 | 27 | Approve & Send did nothing in the live demo run | 6 | ✅ |
 | 28 | Emailing people you never emailed, without opening an injection hole | 6 | ✅ |
+| 29 | Detection died silently, and the brain kept smiling | 7 | ✅ |
 
 ---
 
@@ -270,4 +271,12 @@ Tests cover a stale hash (refused), a double approve (sent once), an edited body
 **The eval found a second risk:** a same-named "Arjun Rao" at a *different* address had a thread on the same topic, and the agent replied there, possibly to the wrong person. That led to the right-person rule: when the loop knows the address, a thread must contain it.
 **Then it got flaky:** a longer prompt made Flash-Lite follow rules less reliably (lease overstep 2/3 runs, wrong person 1/3). Both moved into code: a deterministic right-person check and an **authority verifier** that refuses to save a draft that decides for you (ADR-054).
 **Pitch line.** "When a new feature removed my injection guard, I moved recipient choice to the human. When prompt rules started flaking in the eval, I moved them into code: a deterministic check and a narrow verifier."
+
+## 29. Detection died silently, and the brain kept smiling ✅
+
+**Situation.** The day before the shoot, loops from Notes appeared late or never. `/status` said `ok: true`, captures were accepted, and 4 episodes sat waiting.
+**Why it was hard.** Nothing looked broken. The API thread was healthy. Only the background worker was dead, and the one signal (`auto_detect_running: false`) wasn't shown anywhere in the UI.
+**Root cause.** The worker caught model errors but not database errors. "Delete all data" removed the episode the worker was processing, saving its memories hit a foreign-key error, and the exception ended the thread for good. A second, smaller delay came from Notes: its window title changes with the note count, so the visit you left never got an end-of-visit and waited 5 minutes (ADR-056).
+**What worked.** A supervisor loop: any unexpected error is logged, charged to that episode (so a poison episode is dropped after 3 tries), and the loop continues. The panel shows a red banner if detection ever stops. Reading a new window closes the previous visit, and the newest visit is processed first. There's a test that injects a sqlite error and checks the worker carries on.
+**Pitch line.** "Background workers fail quietly. I made mine unkillable, gave a poison episode a retry budget, and made 'detection stopped' visible to the user instead of hiding it in a status field."
 

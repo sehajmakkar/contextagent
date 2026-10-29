@@ -155,6 +155,10 @@ struct StatusBanners: View {
             if capture.brainStatus == nil {
                 Banner(symbol: "brain", tint: .red, text: "The brain isn't running. Start it with `make brain`.")
             } else if let status = capture.brainStatus {
+                if !status.autoDetectRunning {
+                    Banner(symbol: "exclamationmark.octagon", tint: .red,
+                           text: "Loop detection has stopped. Restart the brain: Ctrl-C, then `make brain`.")
+                }
                 if !status.agentReady && !compact {
                     Banner(symbol: "envelope.badge.shield.half.filled", tint: .orange, text: "Close it for me is off: \(status.agentDetail)")
                 }

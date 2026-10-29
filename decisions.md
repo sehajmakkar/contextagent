@@ -78,6 +78,7 @@ Interview angle: the one-sentence answer to "why?"
 | 053 | No thread → a new email; recipients come only from the loop's known contact or from you | **Accepted** · amends 012, 045 |
 | 054 | Prompt rules that kept flaking became code: authority verifier + right-person check | **Accepted** |
 | 055 | No Docker: the reviewer runs the brain with `uv` and the app with `make` | **Accepted** · supersedes the Docker part of 018 / 024 |
+| 056 | Reading a window closes every other open visit; the newest visit is processed first | **Accepted** · extends 051 |
 
 ---
 
@@ -658,4 +659,14 @@ Query embedding (network) p50 605 ms. Search itself is under 1 ms locally.
 **Decision.** B. `uv sync` installs the exact locked versions from `uv.lock`, which was the reproducibility Docker was meant to buy. The quickstart is now `.env` → `make brain` → `make run-app`, written in `readme.md`.
 **Tradeoffs.** Lost: a fully isolated brain, and a headless path for non-Mac reviewers (nobody can run the product without a Mac anyway). Gained: one fewer tool to install (Docker Desktop is about 2 GB), no bind-mount and port-mapping config to get wrong, faster first start, and nothing to keep in sync between the dev path and the reviewer path.
 **Revisit when.** Shipping for real: then the brain is bundled inside the signed `.app` and started by it.
+
+## ADR-056: Reading a window closes every other open visit, and the newest visit is processed first
+
+**Accepted** · 2026-10-29 · Phase 7 · extends ADR-051
+
+**Context.** Live in Notes, loops showed up minutes late or not at all. There were two causes:
+1. Notes puts the note count in the window title ("All iCloud – 53 notes" → "New Folder – 1 note"), so opening another note is a *new window* to us. The old one never gets a "leaving" read, so it stayed open until the 5-minute gap. The same thing happens when an app quits: the leaving read finds no window, so no end-of-visit is sent.
+2. The worker processed the oldest closed episode first, so the visit you just left could queue behind a large earlier one.
+**Decision.** The app only ever reads the frontmost window, so a `settled` or `poll` read of window B means every other window's visit is over. `episodes.assign` closes all other open capture episodes. A `leaving` read never closes others, because it can arrive after the next window was read. The worker takes the most recently closed episode first.
+**Tradeoffs.** Going back to a window within 5 minutes now starts a new episode, so that window is processed again. The extra cost is a few calls, and dedupe catches repeated memories and loops. Old episodes wait while you keep moving, but they still drain.
 

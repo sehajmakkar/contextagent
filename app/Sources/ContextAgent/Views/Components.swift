@@ -95,7 +95,7 @@ struct PulseDot: View {
     @State private var dim = false
 
     var body: some View {
-        Circle().fill(Color.accentColor).frame(width: 7, height: 7)
+        Circle().fill(Color.green).frame(width: 7, height: 7)
             .opacity(dim ? 0.25 : 1)
             .animation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true), value: dim)
             .onAppear { dim = true }
