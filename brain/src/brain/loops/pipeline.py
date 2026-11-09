@@ -7,6 +7,7 @@ so a 30-snapshot visit costs the same LLM calls as a 1-snapshot visit.
 import json
 import logging
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
 from brain import episodes
@@ -57,11 +58,16 @@ def process(conn: sqlite3.Connection, llm: LLMClient, episode: sqlite3.Row, sett
                       "window_title": episode["window_title"], "url": episode["url"], "text": episode["text"]}
     tracked = dedupe.related_open_loops(conn, episode)
     try:
-        memories, usage = extract_memories(llm, episode, name=settings.user_name)
-        outcome.usages.append(usage)
-        analysis, usage = analyze_loops(llm, as_observation, tracked, name=settings.user_name,
-                                        email=settings.user_email)
-        outcome.usages.append(usage)
+        # The two calls don't depend on each other, so they run side by side: the wait is the slower one,
+        # not the sum (ADR-057). Neither touches the database; a failure in either surfaces from .result().
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            memories_call = pool.submit(extract_memories, llm, episode, name=settings.user_name)
+            loops_call = pool.submit(analyze_loops, llm, as_observation, tracked, name=settings.user_name,
+                                     email=settings.user_email)
+            memories, usage = memories_call.result()
+            outcome.usages.append(usage)
+            analysis, usage = loops_call.result()
+            outcome.usages.append(usage)
         candidates = [c for c in analysis.new_loops if c.confidence >= MIN_CONFIDENCE]
         # Network calls (embedding, judge) happen before the write transaction, never inside it.
         resolved = []

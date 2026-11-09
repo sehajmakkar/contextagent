@@ -548,6 +548,13 @@ Docker on macOS is a Linux VM, so the half of the product that uses the Accessib
 
 ## Log: what we actually learned
 
+### 2026-11-09: Two independent calls should not wait for each other
+- Memory extraction and loop analysis were sequential for no reason. Running them on two threads cut the model wait per visit from ~2.4 s to ~1.6 s (ADR-057). Same cost, same prompts, so the evals still hold.
+- **Why not merge them into one prompt?** It's cheaper, but separately evaluated prompts are worth more than one saved call. A merged prompt would make our loop and retrieval numbers meaningless until re-run.
+- **Testing concurrency without flaky timing:** a `threading.Barrier(2)` in the stub LLM. Each call waits for the other, so sequential code times out and parallel code passes. The test is deterministic and doesn't use `sleep`.
+- A `402` (prepaid credits depleted) isn't a `429`, so the worker treated it as the episode's fault and gave up after 3 tries. Captures made during a billing outage were silently skipped. (Open: make 402 pause like 429.)
+- Interview Q: *"How do you cut latency in an LLM pipeline without changing quality?"* Find the calls that don't depend on each other and run them at the same time. The wait becomes the slowest call instead of the sum. Then measure it: here, 35–40%.
+
 ### 2026-10-26: Phase 7, evals and reviewer README
 
 - Fresh agent eval: **12/12**, and the narrowed authority verifier no longer over-blocks PyCon. The lease's first draft was blocked, then rewritten with a placeholder, which is the verifier working as designed.

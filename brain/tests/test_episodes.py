@@ -1,3 +1,4 @@
+import threading
 from datetime import datetime, timedelta
 
 from brain import episodes, retention
@@ -89,6 +90,24 @@ def test_pipeline_stores_grounded_memories_and_loops_with_provenance(conn):
     assert pipeline.pending(conn, settings) == []
     # FTS5 index stays in sync through the trigger.
     assert conn.execute("SELECT COUNT(*) FROM memories_fts WHERE memories_fts MATCH 'retention'").fetchone()[0] == 1
+
+
+def test_memories_and_loops_are_requested_at_the_same_time(conn):
+    class MustOverlap(StubLLM):
+        # Both calls wait here for each other. Run one after the other, the first would time out.
+        barrier = threading.Barrier(2, timeout=5)
+
+        def generate_structured(self, *, schema, **kwargs):
+            if schema in (Extraction, LoopAnalysis):
+                self.barrier.wait()
+            return super().generate_structured(schema=schema, **kwargs)
+
+    ingest(conn, _obs(f"{ASK}\n{REPLY}"), "file")
+    [ep] = pipeline.pending(conn, Settings())
+
+    outcome = pipeline.process(conn, MustOverlap(), ep, Settings())
+
+    assert outcome.error is None and len(outcome.memories) == 1 and len(outcome.created) == 1
 
 
 def test_local_gate_skips_tiny_episodes_without_an_llm_call(conn):

@@ -74,7 +74,7 @@ The most useful finding: the first agent eval passed 10/10 while one draft agree
 **You need:** an Apple Silicon Mac on macOS 14+, Xcode 16+ (for the Swift 6 toolchain), [uv](https://docs.astral.sh/uv/) (`brew install uv`), and a free [Gemini API key](https://aistudio.google.com/apikey). Python 3.13 is installed by uv automatically.
 
 ```bash
-git clone <this repo> && cd mac-cuck
+git clone <this repo> && cd contextagent
 cp .env.example .env          # add GEMINI_API_KEY, your name and email
 cd brain && uv sync && cd ..  # exact locked dependencies (uv.lock)
 ```

@@ -670,3 +670,13 @@ Query embedding (network) p50 605 ms. Search itself is under 1 ms locally.
 **Decision.** The app only ever reads the frontmost window, so a `settled` or `poll` read of window B means every other window's visit is over. `episodes.assign` closes all other open capture episodes. A `leaving` read never closes others, because it can arrive after the next window was read. The worker takes the most recently closed episode first.
 **Tradeoffs.** Going back to a window within 5 minutes now starts a new episode, so that window is processed again. The extra cost is a few calls, and dedupe catches repeated memories and loops. Old episodes wait while you keep moving, but they still drain.
 
+
+## ADR-057: Memory extraction and loop analysis run in parallel per episode
+
+**Accepted** · 2026-11-09 · Phase 7 · speeds up ADR-033/034/041
+
+**Context.** Each closed episode made two independent Gemini calls one after the other: extract memories, then analyze loops. Neither uses the other's output, so the wait was the sum of both.
+**Options.** (1) Keep them sequential. (2) Merge them into one prompt: one call, cheapest, but the two prompts are tuned and evaluated separately (loop eval, retrieval eval), and a merged prompt would invalidate those numbers. (3) Run both at once on a 2-thread `ThreadPoolExecutor`. The google-genai client is synchronous, and the worker is already a thread, so threads fit better than asyncio.
+**Decision.** (3). `pipeline.process` submits both calls and then waits for both. Neither touches SQLite (connections are thread-bound), so all writes stay in the one transaction afterwards. Dedupe, verify and embedding stay sequential because they depend on these results.
+**Result.** Live on a Gmail screen with Flash-Lite: 2.3–2.7 s → 1.4–1.7 s for the two calls (about 35–40% less), with the same calls, tokens and cost. `test_memories_and_loops_are_requested_at_the_same_time` uses a barrier to prove the calls overlap: it fails on sequential code.
+**Tradeoffs.** Requests per minute are unchanged, but two arrive at the same moment, so a 429 can hit both. Each call retries independently. If one call fails, the other's work is thrown away and the episode is retried whole, which matches how a failure behaved before.
