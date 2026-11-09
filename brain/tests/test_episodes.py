@@ -178,3 +178,42 @@ def test_the_verifier_can_veto_a_close(conn):
     outcome = pipeline.process(conn, StubLLM(updates=[claim], new_loops=False, verifier_agrees=False), ep2, Settings())
     assert outcome.closed == [] and conn.execute("SELECT state FROM loops").fetchone()[0] == "open"
 
+
+
+def _tracked_loop(conn) -> int:
+    ingest(conn, _obs(f"{ASK}\n{REPLY}"), "file")
+    [ep] = pipeline.pending(conn, Settings())
+    pipeline.process(conn, StubLLM(), ep, Settings())
+    return conn.execute("SELECT id FROM loops").fetchone()[0]
+
+
+class CountsVerifier(StubLLM):
+    verifier_calls = 0
+
+    def generate_structured(self, *, schema, **kwargs):
+        if schema is CloseVerdict:
+            self.verifier_calls += 1
+        return super().generate_structured(schema=schema, **kwargs)
+
+
+def test_a_promise_never_closes_its_own_loop(conn):
+    """Regression (demo): replying "I'll send it by Thursday" closed the loop, with model and verifier agreeing."""
+    loop_id = _tracked_loop(conn)
+    ingest(conn, _obs(f"{ASK}\n{REPLY}\nMessage sent", minutes=60 * 24), "file")
+    [ep2] = pipeline.pending(conn, Settings())
+    wrong = LoopUpdate(loop_id=loop_id, status="done", evidence_quote=REPLY, confidence=0.95)
+    llm = CountsVerifier(updates=[wrong])  # the visit re-proposes the promise, which merges into the loop
+    outcome = pipeline.process(conn, llm, ep2, Settings())
+    assert outcome.closed == [] and outcome.progressed == [loop_id] and llm.verifier_calls == 0
+    assert conn.execute("SELECT state FROM loops").fetchone()[0] == "open"
+
+
+def test_a_send_toast_alone_is_not_proof(conn):
+    loop_id = _tracked_loop(conn)
+    ingest(conn, _obs(f"{ASK}\nSure, on it\nMessage sent", minutes=60 * 24), "file")
+    [ep2] = pipeline.pending(conn, Settings())
+    toast = LoopUpdate(loop_id=loop_id, status="done", evidence_quote="Message sent", confidence=0.9)
+    llm = CountsVerifier(updates=[toast], new_loops=False)
+    outcome = pipeline.process(conn, llm, ep2, Settings())
+    assert outcome.closed == [] and llm.verifier_calls == 0
+    assert conn.execute("SELECT state FROM loops").fetchone()[0] == "open"

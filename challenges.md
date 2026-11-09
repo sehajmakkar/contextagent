@@ -280,3 +280,12 @@ Tests cover a stale hash (refused), a double approve (sent once), an edited body
 **What worked.** A supervisor loop: any unexpected error is logged, charged to that episode (so a poison episode is dropped after 3 tries), and the loop continues. The panel shows a red banner if detection ever stops. Reading a new window closes the previous visit, and the newest visit is processed first. There's a test that injects a sqlite error and checks the worker carries on.
 **Pitch line.** "Background workers fail quietly. I made mine unkillable, gave a poison episode a retry budget, and made 'detection stopped' visible to the user instead of hiding it in a status field."
 
+
+## 30. Saying "I'll send it" closed the loop for sending it ✅
+
+**Situation.** While rehearsing the demo, the moment I replied "Sure, I'll send you the link by Thursday", the new loop jumped straight to Recently closed: the exact opposite of the pitch.
+**Why it was hard.** Two safety layers existed for this (a 0.8 confidence bar and a separate verifier model), and both said yes. The screen really did show a sent reply and Gmail's "Message sent" toast. To a model, "a reply to the ask was sent" looks like delivery.
+**What we tried.** Raising the confidence bar: useless, because the wrong closes came at 0.9+. Prompt rules alone: they help, but they're probabilistic, on the one failure that hides a real deadline.
+**What worked.** Deterministic vetoes in code before the verifier (ADR-059): a visit that restates the commitment can't close it, the promise can't be its own evidence, and a toast is never evidence. Prompt rules in both the analysis and verifier calls cover what code can't see. Two pipeline tests fail on the old code. Two eval cases: the demo thread stays open, and a reply with the actual link still closes (6/6 correct closes, 0 unsafe).
+**Tradeoff.** A rare valid close can now be held back to "progress". That's the safe direction: a card you resolve by hand, not a deadline that silently disappears.
+**Pitch line.** "My verifier model agreed with the bad close, because both read the same misleading screen. Correlated errors beat a second opinion, so I put cheap deterministic checks under the model ones and pinned the bug with a regression case *and* a control."

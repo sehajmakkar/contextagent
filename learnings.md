@@ -548,6 +548,13 @@ Docker on macOS is a Linux VM, so the half of the product that uses the Accessib
 
 ## Log: what we actually learned
 
+### 2026-11-10: Two LLM judges can be wrong together
+- The bug: replying "Sure, I'll send it by Thursday" closed the loop. The analysis call said `done`, and the verifier agreed. A second LLM check isn't independent when it reads the same misleading evidence (a just-sent reply plus Gmail's "Message sent" toast). **Correlated errors** defeat generator + verifier.
+- The fix layers a cheap **deterministic veto** under the model checks (ADR-059): a visit that restates a commitment can't also close it, the promise sentence can't be its own proof, and a send toast is never proof. Code catches what it can see, and prompt rules cover the rest. Blocked closes skip the verifier call, so the fix saves money too.
+- **Eval hygiene:** a regression case alone could be "fixed" by never closing anything, so it ships with a **control** (`regress-03`, the link actually sent, must close). Prompt changes invalidate cached eval outputs, so the full set needs a `--fresh` run before re-quoting numbers.
+- Interview Q: *"You already have a verifier model. Why did a wrong close still get through?"* Because both models saw the same misleading evidence, their errors were correlated. I added checks in code that don't depend on a model reading the text, plus a regression case with a control.
+- Interview Q: *"How do you choose between a prompt fix and a code fix?"* If the rule can be checked from structured data (which loop a candidate merged into, an exact quote match), do it in code: deterministic and free. Use the prompt for judgement calls code can't make ("is this a promise?").
+
 ### 2026-11-09: Showing the work beats doing more work
 - "The dashboard looks empty" wasn't a recall problem. Most visits *should* produce no memories. The fix was to make the pipeline visible (an Activity row per visit: reading → "2 memories · 1 loop" / "nothing new"), not to lower the extraction bar and pollute retrieval (ADR-058).
 - **Optional endpoints for mixed versions:** the app fetches `/activity` with `try?`, so a brain started before the feature (404) doesn't break the inbox. We hit this live: the brain was restarted before the endpoint existed.

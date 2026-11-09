@@ -85,9 +85,14 @@ def process(conn: sqlite3.Connection, llm: LLMClient, episode: sqlite3.Row, sett
             resolved.append((c, existing, vector))
         # Every proposed close gets a second, narrow check before it can hide a loop.
         by_id = {loop["id"]: loop for loop in tracked}
+        restated = {existing for _, existing, _ in resolved if existing}
+        promises = {store.normalize(c.evidence_quote) for c in candidates}
         verified: set[int] = set()
         for u in analysis.updates:
             if u.status == "done" and u.confidence >= CLOSE_CONFIDENCE:
+                if blocked := _close_blocked(u.loop_id, u.evidence_quote, restated, promises):
+                    log.info("close of loop #%s blocked: %s", u.loop_id, blocked)
+                    continue  # falls through to "progress" below; no verifier call spent
                 ok, reason, usage = verify_close(llm, by_id[u.loop_id], u.evidence_quote, episode["text"])
                 outcome.usages.append(usage)
                 if ok:
@@ -132,6 +137,25 @@ def process(conn: sqlite3.Connection, llm: LLMClient, episode: sqlite3.Row, sett
                 outcome.progressed.append(u.loop_id)
         _finish(conn, episode, outcome.usages)
     return outcome
+
+
+# Send confirmations prove *a* message left, not that it held the deliverable (ADR-059).
+SEND_TOASTS = {"message sent", "sent", "your message has been sent", "view message", "undo", "message sent undo view message"}
+
+
+def _close_blocked(loop_id: int, quote: str, restated: set[int], promises: set[str]) -> str | None:
+    """Code-level vetoes on an inferred close, checked before the verifier (ADR-059).
+
+    The model can call a fresh promise "done" ("Sure, I'll send it by Thursday" + Gmail's "Message sent"),
+    so a close is refused when this same visit (re)states the commitment, or when the only proof is a toast.
+    """
+    if loop_id in restated:
+        return "this visit restates the commitment as open"
+    if store.normalize(quote) in promises:
+        return "the evidence is the promise itself"
+    if store.normalize(quote).strip(" .!") in SEND_TOASTS:
+        return "a send confirmation alone doesn't show what was sent"
+    return None
 
 
 def _source_of(conn: sqlite3.Connection, episode: sqlite3.Row, quote: str) -> int:

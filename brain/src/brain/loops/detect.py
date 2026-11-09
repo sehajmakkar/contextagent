@@ -82,6 +82,11 @@ Tracked loops: the prompt lists loops already being tracked that may relate to t
 - Never create a new loop for something already tracked. Report it in updates instead.
 - done = the screen shows it was sent or delivered, or the other person said it's no longer needed.
 - progress = partial work or new information. still_open = mentioned, but nothing changed.
+- A promise, acknowledgement or plan is never done, even right after it was sent: "Sure, I'll send you the \
+link by Thursday", "will do", "on it" mean the loop is still_open. done needs the deliverable itself on screen \
+(the link, the file, the numbers), or the other person confirming they got it.
+- "Message sent", "Sent" and similar notifications only show that some message went out, not what it contained. \
+Never use one as the evidence for done.
 - Only report tracked loops this screen actually mentions.
 
 Rules:
