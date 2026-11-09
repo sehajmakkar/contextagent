@@ -548,6 +548,11 @@ Docker on macOS is a Linux VM, so the half of the product that uses the Accessib
 
 ## Log: what we actually learned
 
+### 2026-11-09: Showing the work beats doing more work
+- "The dashboard looks empty" wasn't a recall problem. Most visits *should* produce no memories. The fix was to make the pipeline visible (an Activity row per visit: reading → "2 memories · 1 loop" / "nothing new"), not to lower the extraction bar and pollute retrieval (ADR-058).
+- **Optional endpoints for mixed versions:** the app fetches `/activity` with `try?`, so a brain started before the feature (404) doesn't break the inbox. We hit this live: the brain was restarted before the endpoint existed.
+- Interview Q: *"Your users think the AI isn't doing anything. What do you do?"* Check whether that's true first. Here it wasn't: it was silently correct. Then show its work (status, counts) rather than making it produce more output.
+
 ### 2026-11-09: Two independent calls should not wait for each other
 - Memory extraction and loop analysis were sequential for no reason. Running them on two threads cut the model wait per visit from ~2.4 s to ~1.6 s (ADR-057). Same cost, same prompts, so the evals still hold.
 - **Why not merge them into one prompt?** It's cheaper, but separately evaluated prompts are worth more than one saved call. A merged prompt would make our loop and retrieval numbers meaningless until re-run.

@@ -31,6 +31,7 @@ final class InboxModel {
     private(set) var open: [Loop] = []
     private(set) var closed: [Loop] = []
     private(set) var memories: [Memory] = []
+    private(set) var activity: [Visit] = []
     private(set) var runs: [Int: Run] = [:]
     private(set) var lastRefresh: Date?
     var error: String?
@@ -56,12 +57,16 @@ final class InboxModel {
         do {
             async let openLoops = brain.loops(state: "open")
             async let closedLoops = brain.loops(state: "closed")
-            async let recent = brain.memories(limit: 30)
+            async let recent = brain.memories(limit: 100)
+            async let visits = brain.activity()
             let (newOpen, newClosed, newMemories) = try await (openLoops, closedLoops, recent)
+            // Activity is a nice-to-have: a brain without /activity must not break the inbox.
+            let newActivity = (try? await visits) ?? activity
             // Assign only on change: every assignment redraws every card, even when nothing moved.
             if newOpen != open { open = newOpen }
             if newClosed != closed { closed = newClosed }
             if newMemories != memories { memories = newMemories }
+            if newActivity != activity { activity = newActivity }
             error = nil
             lastRefresh = .now
             await resumePendingDrafts()

@@ -349,6 +349,38 @@ def recent_memories(limit: int = 20, conn: sqlite3.Connection = Depends(db)) -> 
     return [MemoryOut(**dict(r)) for r in rows]
 
 
+class ActivityOut(BaseModel):
+    episode_id: int
+    app_name: str
+    bundle_id: str
+    window_title: str
+    status: Literal["reading", "done", "failed"]
+    memories: int
+    loops: int          # new loops this visit created
+    closed_loops: int   # tracked loops this visit showed were done
+    ended_at: str
+
+
+@app.get("/activity", response_model=list[ActivityOut], dependencies=[Depends(require_token)])
+def recent_activity(limit: int = 6, conn: sqlite3.Connection = Depends(db)) -> list[ActivityOut]:
+    """The last visits the brain read and what each one produced, so the dashboard shows it working even when
+    a visit had nothing worth keeping. Visits too short to send to the model are left out: they're noise."""
+    rows = conn.execute(
+        """SELECT e.id AS episode_id, e.app_name, e.bundle_id, COALESCE(e.window_title, '') AS window_title,
+                  e.ended_at,
+                  CASE WHEN e.processed_at IS NOT NULL THEN 'done'
+                       WHEN e.process_attempts >= ? THEN 'failed' ELSE 'reading' END AS status,
+                  (SELECT COUNT(*) FROM memories m WHERE m.episode_id = e.id AND m.duplicate_of IS NULL) AS memories,
+                  (SELECT COUNT(DISTINCT ev.loop_id) FROM loop_evidence ev JOIN observations o ON o.id = ev.observation_id
+                   WHERE o.episode_id = e.id AND ev.kind = 'created') AS loops,
+                  (SELECT COUNT(DISTINCT ev.loop_id) FROM loop_evidence ev JOIN observations o ON o.id = ev.observation_id
+                   WHERE o.episode_id = e.id AND ev.kind = 'closed') AS closed_loops
+           FROM episodes e
+           WHERE e.source = 'capture' AND e.closed_at IS NOT NULL AND e.skipped_reason IS NULL
+           ORDER BY e.closed_at DESC, e.id DESC LIMIT ?""", (pipeline.MAX_ATTEMPTS, min(limit, 50))).fetchall()
+    return [ActivityOut(**dict(r)) for r in rows]
+
+
 class VisitIn(BaseModel):
     bundle_id: str
     window_title: str

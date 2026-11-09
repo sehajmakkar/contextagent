@@ -89,6 +89,12 @@ struct BrainClient: Sendable {
         return try await send(request)
     }
 
+    func activity(limit: Int = 6) async throws -> [Visit] {
+        var request = try authorized("activity")
+        request.url = request.url?.appending(queryItems: [URLQueryItem(name: "limit", value: String(limit))])
+        return try await send(request)
+    }
+
     func action(_ id: Int) async throws -> AgentAction {
         try await send(try authorized("actions/\(id)"))
     }

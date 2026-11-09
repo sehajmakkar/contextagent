@@ -25,6 +25,13 @@ struct DashboardView: View {
             .background(RoundedRectangle(cornerRadius: 14).fill(.background.secondary))
 
             VStack(alignment: .leading, spacing: 10) {
+                Text("Activity").font(.title2.weight(.bold))
+                if inbox.activity.isEmpty {
+                    Text("Each window you visit shows up here once it's read.").foregroundStyle(.secondary).font(.body)
+                }
+                ForEach(inbox.activity) { ActivityRow(visit: $0) }
+                Divider().padding(.vertical, 6)
+
                 Text("Recent memories").font(.title2.weight(.bold))
                 if inbox.memories.isEmpty {
                     Text("Memories appear after your first episodes are processed.").foregroundStyle(.secondary).font(.body)
@@ -56,6 +63,24 @@ struct DashboardView: View {
                 await capture.refreshStatus()
                 try? await Task.sleep(for: .seconds(3))
             }
+        }
+    }
+}
+
+/// One line per visit: where you were, and what reading it produced.
+private struct ActivityRow: View {
+    let visit: Visit
+
+    var body: some View {
+        let produced = visit.status == "done" && visit.memories + visit.loops + visit.closedLoops > 0
+        HStack(spacing: 8) {
+            AppIcon(bundleID: visit.bundleId, size: 18)
+            Text(verbatim: visit.windowTitle.isEmpty ? visit.appName : visit.windowTitle)
+                .lineLimit(1).truncationMode(.tail)
+            Spacer(minLength: 8)
+            if visit.status == "reading" { PulseDot() }
+            Text(verbatim: InboxLogic.visitSummary(visit))
+                .font(.callout).foregroundStyle(produced ? .primary : .secondary).fixedSize()
         }
     }
 }

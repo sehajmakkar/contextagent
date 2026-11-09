@@ -33,6 +33,20 @@ struct Memory: Decodable, Sendable, Identifiable, Equatable {
     let happenedAt: String
 }
 
+/// One window visit the brain read, and what came out of it (GET /activity).
+struct Visit: Decodable, Sendable, Identifiable, Equatable {
+    let episodeId: Int
+    let appName: String
+    let bundleId: String
+    let windowTitle: String
+    let status: String             // reading | done | failed
+    let memories: Int
+    let loops: Int
+    let closedLoops: Int
+    let endedAt: String
+    var id: Int { episodeId }
+}
+
 struct Draft: Decodable, Sendable, Equatable {
     let draftId: String
     let threadId: String?

@@ -680,3 +680,12 @@ Query embedding (network) p50 605 ms. Search itself is under 1 ms locally.
 **Decision.** (3). `pipeline.process` submits both calls and then waits for both. Neither touches SQLite (connections are thread-bound), so all writes stay in the one transaction afterwards. Dedupe, verify and embedding stay sequential because they depend on these results.
 **Result.** Live on a Gmail screen with Flash-Lite: 2.3–2.7 s → 1.4–1.7 s for the two calls (about 35–40% less), with the same calls, tokens and cost. `test_memories_and_loops_are_requested_at_the_same_time` uses a barrier to prove the calls overlap: it fails on sequential code.
 **Tradeoffs.** Requests per minute are unchanged, but two arrive at the same moment, so a 429 can hit both. Each call retries independently. If one call fails, the other's work is thrown away and the episode is retried whole, which matches how a failure behaved before.
+
+## ADR-058: The dashboard shows every visit the brain read (Activity), instead of extracting more memories
+
+**Accepted** · 2026-11-09 · Phase 7
+
+**Context.** The dashboard looked idle: memories appear only for visits that contain something worth keeping, so a normal stretch of browsing showed nothing, and it wasn't clear the app was working.
+**Options.** (1) Extract more memories per visit (raise `MAX_MEMORIES`, lower the bar): fills the list, but with chrome and trivia ("Inbox 9"), which hurts the agent's search and the retrieval eval. (2) Show the pipeline itself: one row per visit read, with what it produced.
+**Decision.** (2). `GET /activity` returns the last 6 capture visits: `reading` (queued or being processed), `done` with counts of memories, new loops and closed loops, or `failed`. Visits too short to send to the model are hidden as noise. The dashboard shows them as a compact list above Recent memories, one line each, and the memory list now shows up to 100 items. The app treats `/activity` as optional, so an older brain doesn't break the inbox.
+**Tradeoffs.** Window titles become visible in the UI (they're local and already stored). "Nothing new" rows are honest, but they show the model often finds nothing, which is the correct behaviour.

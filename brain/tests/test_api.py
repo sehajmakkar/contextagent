@@ -70,6 +70,32 @@ def test_inbox_lists_and_resolves_loops(client):
     assert client.post(f"/loops/{loop['id']}/transition", json={"to": "dismissed"}, headers=h).status_code == 409
 
 
+def test_activity_shows_each_visit_and_what_it_produced(client):
+    from datetime import date
+
+    h = {"X-Brain-Token": client.token}
+    obs_id = client.post("/observations", json=OBS, headers=h).json()["observation_id"]
+    client.post("/visits/end", json={"bundle_id": OBS["bundle_id"], "window_title": OBS["window_title"]}, headers=h)
+    [visit] = client.get("/activity", headers=h).json()
+    assert (visit["window_title"], visit["status"], visit["memories"], visit["loops"]) == ("Inbox - Gmail", "reading", 0, 0)
+
+    conn = store.connect(get_settings().db_path)
+    with conn:
+        store.insert_memory(conn, episode_id=visit["episode_id"], observation_id=obs_id, kind="plan",
+                            text="Jordan wants the deck by Friday.", quote="send the deck by Friday", entities="[]",
+                            happened_at=OBS["captured_at"])
+        store.create_loop(conn, observation_id=obs_id, evidence_quote="Can you send the deck by Friday?",
+                          title="Send the deck", direction="i_owe", counterparty="Jordan Lee", deliverable="deck",
+                          note="Asked for Friday.", due_date=date(2026, 10, 30), confidence=0.9)
+        conn.execute("UPDATE episodes SET processed_at = '2026-10-25T10:01:00+05:30'")
+    [visit] = client.get("/activity", headers=h).json()
+    assert (visit["status"], visit["memories"], visit["loops"], visit["closed_loops"]) == ("done", 1, 1, 0)
+
+    with conn:  # a visit too short to send to the model is noise, not activity
+        conn.execute("UPDATE episodes SET skipped_reason = 'too little text'")
+    assert client.get("/activity", headers=h).json() == []
+
+
 def test_approval_endpoint_needs_the_shown_hash_and_sends_once(client):
     """End to end through HTTP with a scripted agent and a fake mailbox."""
     from brain.agent.loop import close_loop

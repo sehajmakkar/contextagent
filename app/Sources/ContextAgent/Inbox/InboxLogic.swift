@@ -37,6 +37,20 @@ enum SSE {
 }
 
 enum InboxLogic {
+    /// The right-hand side of an activity row: "reading…", "nothing new", or what the visit produced.
+    static func visitSummary(_ visit: Visit) -> String {
+        switch visit.status {
+        case "reading": return "reading…"
+        case "failed": return "couldn't read"
+        default:
+            var parts: [String] = []
+            if visit.memories > 0 { parts.append("\(visit.memories) memor\(visit.memories == 1 ? "y" : "ies")") }
+            if visit.loops > 0 { parts.append("\(visit.loops) loop\(visit.loops == 1 ? "" : "s")") }
+            if visit.closedLoops > 0 { parts.append("closed \(visit.closedLoops)") }
+            return parts.isEmpty ? "nothing new" : parts.joined(separator: " · ")
+        }
+    }
+
     /// `[[...]]` slots the agent left for things only you know. Approve stays disabled until they're filled,
     /// so a half-finished draft can't be sent by accident (ADR-050).
     static func placeholders(in body: String) -> [String] {

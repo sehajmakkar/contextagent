@@ -42,6 +42,17 @@ import Testing
             == ["Google Chrome", "WhatsApp"])
 }
 
+@Test func visitSummarySaysWhatAVisitProduced() {
+    func visit(_ status: String, _ memories: Int, _ loops: Int, _ closed: Int) -> Visit {
+        Visit(episodeId: 1, appName: "Notes", bundleId: "com.apple.Notes", windowTitle: "", status: status,
+              memories: memories, loops: loops, closedLoops: closed, endedAt: "")
+    }
+    #expect(InboxLogic.visitSummary(visit("done", 0, 0, 0)) == "nothing new")
+    #expect(InboxLogic.visitSummary(visit("done", 1, 0, 0)) == "1 memory")
+    #expect(InboxLogic.visitSummary(visit("done", 3, 2, 1)) == "3 memories · 2 loops · closed 1")
+    #expect(InboxLogic.visitSummary(visit("failed", 0, 0, 0)) == "couldn't read")
+}
+
 /// Real responses captured from the brain (anonymized): the Swift types must decode exactly what the API sends.
 @Test func realBrainResponsesDecode() throws {
     func load<T: Decodable>(_ name: String, as type: T.Type) throws -> T {
@@ -57,6 +68,8 @@ import Testing
     let action = try load("action_sent", as: AgentAction.self)
     #expect(action.status == "sent" && action.draft?.to == ["test.recipient@example.com"] && !action.steps.isEmpty)
     _ = try load("memories", as: [Memory].self)
+    let visits = try load("activity", as: [Visit].self)
+    #expect(visits.map(InboxLogic.visitSummary) == ["2 memories · 1 loop", "reading…"])
     let status = try load("status", as: BrainClient.Status.self)
     #expect(status.agentReady)
 }
